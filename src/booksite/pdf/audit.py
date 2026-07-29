@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,13 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def book_id_for_source(path: Path, source_sha256: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", path.stem)
+    ascii_stem = decomposed.encode("ascii", "ignore").decode("ascii")
+    readable_stem = re.sub(r"[^a-z0-9]+", "-", ascii_stem.casefold()).strip("-")
+    return f"{(readable_stem or 'book')[:80]}-{source_sha256[:8]}"
 
 
 def _image_coverage(page: pymupdf.Page) -> float:
@@ -103,7 +112,7 @@ def audit_pdf(pdf_path: str | Path, max_pages: int | None = None) -> AuditReport
         return AuditReport(
             source_pdf=source_path,
             source_sha256=source_sha256,
-            book_id=f"{source_path.stem}-{source_sha256[:8]}",
+            book_id=book_id_for_source(source_path, source_sha256),
             title=title,
             author=author,
             language=metadata.get("language") or None,
@@ -113,4 +122,3 @@ def audit_pdf(pdf_path: str | Path, max_pages: int | None = None) -> AuditReport
             original_toc=_toc_entries(document, page_count),
             pages=pages,
         )
-

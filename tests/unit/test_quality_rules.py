@@ -16,4 +16,3 @@ def test_classifies_short_native_text_as_suspect() -> None:
         classify_native_text("Short but present text.", image_coverage_ratio=0.0)
         is NativeTextStatus.TEXT_SUSPECT
     )
-

@@ -38,4 +38,3 @@ def classify_native_text(
     if image_coverage_ratio > limits.image_only_coverage_ratio:
         return NativeTextStatus.IMAGE_ONLY
     return NativeTextStatus.MIXED
-

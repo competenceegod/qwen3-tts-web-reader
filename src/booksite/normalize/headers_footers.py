@@ -35,8 +35,5 @@ def find_repeated_marginal_text(
 
     minimum_pages = max(2, round(page_count * minimum_ratio))
     return {
-        text
-        for text, page_indexes in pages_by_text.items()
-        if len(page_indexes) >= minimum_pages
+        text for text, page_indexes in pages_by_text.items() if len(page_indexes) >= minimum_pages
     }
-

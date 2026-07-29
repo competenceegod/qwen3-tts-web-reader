@@ -16,4 +16,3 @@ def stable_slug(title: str, source_page: int) -> str:
     """Create a readable slug whose suffix is stable for the source location."""
     digest = hashlib.sha256(f"{source_page}:{title}".encode()).hexdigest()[:8]
     return f"{_readable_title(title)}-{digest}"
-

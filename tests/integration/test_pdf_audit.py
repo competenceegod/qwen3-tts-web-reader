@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pymupdf
@@ -31,3 +32,15 @@ def test_audit_preserves_pages_metadata_and_in_range_bookmarks(tmp_path: Path) -
     assert all(page.native_text_status is NativeTextStatus.TEXT_GOOD for page in report.pages)
     assert report.pages[0].native_text.startswith("Sample Book")
 
+
+def test_audit_creates_url_safe_book_id_for_non_ascii_filename(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "书籍 # One.pdf"
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((30, 80), "Readable content. " * 10)
+    document.save(pdf_path)
+    document.close()
+
+    report = audit_pdf(pdf_path)
+
+    assert re.fullmatch(r"one-[0-9a-f]{8}", report.book_id)

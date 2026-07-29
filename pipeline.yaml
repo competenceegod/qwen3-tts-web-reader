@@ -1,0 +1,10 @@
+# The sample validation keeps the lightweight native parser enabled.
+# Set docling.enabled to true after `uv sync --extra docling` for enriched artifacts.
+docling:
+  enabled: false
+
+mineru:
+  enabled: false
+
+ovisocr2:
+  enabled: false

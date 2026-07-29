@@ -7,6 +7,12 @@ def test_normalize_unicode_uses_nfc_and_removes_invisible_noise() -> None:
     assert normalize_unicode(source) == "café α² →"
 
 
+def test_normalize_unicode_removes_controls_and_collapses_replacement_runs() -> None:
+    source = "Contents\b \ufffd\ufffd\ufffd\ufffd 12"
+
+    assert normalize_unicode(source) == "Contents … 12"
+
+
 def test_dehyphenate_joins_plain_words_split_across_lines() -> None:
     assert dehyphenate_line_breaks("an exam-\nple sentence") == "an example sentence"
 
@@ -15,4 +21,3 @@ def test_dehyphenate_preserves_urls_and_code_like_tokens() -> None:
     source = "https://example-\n.com\nmodel-\n_name"
 
     assert dehyphenate_line_breaks(source) == source
-

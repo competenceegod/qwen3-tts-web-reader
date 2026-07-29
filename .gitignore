@@ -11,8 +11,8 @@ dist/
 build/
 *.egg-info/
 node_modules/
-site/build/
-site/.docusaurus/
+# Generated book content can be copyrighted and is always reproducible.
+/site/
 tmp/
 workspace/cache/
 workspace/intermediate/
@@ -23,4 +23,3 @@ workspace/output/
 .env
 .env.*
 !.env.example
-

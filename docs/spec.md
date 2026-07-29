@@ -19,9 +19,10 @@ Primary user story:
 - PyMuPDF is always available in the core environment and performs audit,
   native-text extraction, bookmarks, block geometry, image extraction, and
   page rendering.
-- Docling is the preferred high-fidelity parser when the optional
-  `docling` dependency is installed. The core native-text parser remains a
-  deterministic fallback so the project is immediately runnable.
+- Docling produces high-fidelity comparison artifacts when the optional
+  `docling` dependency is installed. The MVP keeps the core native-text parser
+  as the deterministic BookIR source; automatic Docling block replacement is
+  deferred.
 - MinerU and OvisOCR2 are optional, isolated subprocess adapters. The MVP
   validates their protocol and routing but does not download their model
   weights automatically.
@@ -158,6 +159,7 @@ def stable_slug(title: str, source_page: int) -> str:
 ## Deferred after MVP
 
 - Full MinerU block-level replacement.
+- Automatic Docling block selection and BookIR replacement.
 - OvisOCR2 model installation and Apple Silicon weight management.
 - Advanced cross-page table reconstruction.
 - Formula-image fallback derived from model-detected formula boxes.
@@ -167,4 +169,3 @@ def stable_slug(title: str, source_page: int) -> str:
 
 None blocking. Optional OCR engines require user-supplied executables and model
 configuration when enabled.
-

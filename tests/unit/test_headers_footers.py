@@ -17,4 +17,3 @@ def test_repeated_top_and_bottom_lines_are_detected_without_body_false_positive(
     assert "generative ai with langchain" in repeated
     assert "<page-number>" in repeated
     assert "repeated words in body" not in repeated
-

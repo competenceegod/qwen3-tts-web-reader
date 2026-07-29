@@ -12,4 +12,3 @@ def test_stable_slug_is_readable_and_deterministic() -> None:
 
 def test_stable_slug_changes_when_source_page_changes() -> None:
     assert stable_slug("Introduction", 1) != stable_slug("Introduction", 2)
-
