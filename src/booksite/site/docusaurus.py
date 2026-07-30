@@ -21,6 +21,7 @@ def _js_string(value: str | None) -> str:
 
 def _plain_search_text(markdown: str) -> str:
     text = re.sub(r"```.*?```", " ", markdown, flags=re.DOTALL)
+    text = re.sub(r'<PdfCodeBlock data="[^"]*" />', " ", text)
     text = re.sub(r"!\[[^\]]*]\([^)]*\)", " ", text)
     text = re.sub(r"\[([^\]]+)]\([^)]*\)", r"\1", text)
     text = re.sub(r"[#>*_`|~-]+", " ", text)
@@ -105,6 +106,82 @@ if assets_dir.is_dir():
         if candidate.is_dir() and (candidate / ".booksite-generated").is_file():
             shutil.rmtree(candidate)
 '''
+
+
+def _pdf_code_block_js() -> str:
+    return """import React, {useMemo, useState} from 'react';
+
+export default function PdfCodeBlock({data}) {
+  const [copied, setCopied] = useState(false);
+  const code = useMemo(() => JSON.parse(atob(data)), [data]);
+  const plainText = useMemo(
+    () => code.lines
+      .map((line) => line.map((span) => span.text).join(''))
+      .join('\\n'),
+    [code],
+  );
+
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(plainText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div
+      className="booksite-pdf-code"
+      style={{
+        '--pdf-code-background': code.backgroundColor,
+        '--pdf-code-border': code.borderColor,
+        '--pdf-code-font-size': `${code.fontSizePt}pt`,
+      }}
+    >
+      <button type="button" aria-label="Copy code" onClick={copyCode}>
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      <pre tabIndex={0}>
+        <code>
+          {code.lines.map((line, lineIndex) => (
+            <React.Fragment key={lineIndex}>
+              {line.map((span, spanIndex) => (
+                <span
+                  key={spanIndex}
+                  style={{
+                    color: span.color,
+                    fontFamily:
+                      `"${span.fontFamily}", Consolas, "SFMono-Regular", Menlo, monospace`,
+                    fontSize: `${span.fontSizePt}pt`,
+                    fontStyle: span.italic ? 'italic' : 'normal',
+                    fontWeight: span.bold ? 700 : 400,
+                  }}
+                >
+                  {span.text}
+                </span>
+              ))}
+              {lineIndex + 1 < code.lines.length ? '\\n' : null}
+            </React.Fragment>
+          ))}
+        </code>
+      </pre>
+    </div>
+  );
+}
+"""
+
+
+def _mdx_components_js() -> str:
+    return """import MDXComponents from '@theme-original/MDXComponents';
+import PdfCodeBlock from '@site/src/components/PdfCodeBlock';
+
+export default {
+  ...MDXComponents,
+  PdfCodeBlock,
+};
+"""
 
 
 def _preview_server_py() -> str:
@@ -479,6 +556,59 @@ def _custom_css() -> str:
 
 pre, code, .table-wrapper { max-width: 100%; overflow-x: auto; }
 pre { border: 1px solid var(--booksite-border); border-radius: 6px; box-shadow: none; }
+.booksite-pdf-code {
+  position: relative;
+  max-width: 100%;
+  margin: 1.2rem 0;
+  overflow: hidden;
+  border-left: 4px solid var(--pdf-code-border);
+  border-radius: 0;
+  background: var(--pdf-code-background);
+  font-family: Consolas, "SFMono-Regular", Menlo, monospace;
+}
+.booksite-pdf-code pre {
+  max-width: 100%;
+  margin: 0;
+  padding: 0.7rem 1rem 0.8rem 1.25rem;
+  overflow-x: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: var(--pdf-code-font-size);
+  line-height: 1.62;
+  tab-size: 4;
+}
+.booksite-pdf-code code {
+  display: block;
+  min-width: max-content;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: pre;
+}
+.booksite-pdf-code button {
+  position: absolute;
+  z-index: 1;
+  top: 0.45rem;
+  right: 0.55rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--pdf-code-border) 70%, #0000);
+  border-radius: 4px;
+  opacity: 0;
+  background: color-mix(in srgb, var(--pdf-code-background) 88%, #ffffff);
+  color: #384152;
+  font-family: var(--ifm-font-family-base);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.booksite-pdf-code:hover button,
+.booksite-pdf-code button:focus-visible { opacity: 1; }
 table { display: table; width: 100%; }
 table thead { position: sticky; top: var(--ifm-navbar-height); z-index: 1; }
 table th { background: var(--booksite-surface); }
@@ -566,6 +696,7 @@ img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
   .main-wrapper main { padding-inline: 20px; }
   .booksite-search-link { min-width: auto; border: 0; }
   .booksite-book-title { max-width: none; border-left: 0; }
+  .booksite-pdf-code button { opacity: 1; }
 }
 """
 
@@ -574,11 +705,15 @@ def generate_docusaurus_site(book: BookIR, site_dir: str | Path) -> SiteGenerati
     target = Path(site_dir)
     docs_dir = target / "docs"
     css_dir = target / "src" / "css"
+    components_dir = target / "src" / "components"
     pages_dir = target / "src" / "pages"
+    theme_dir = target / "src" / "theme"
     static_dir = target / "static"
     docs_dir.mkdir(parents=True, exist_ok=True)
     css_dir.mkdir(parents=True, exist_ok=True)
+    components_dir.mkdir(parents=True, exist_ok=True)
     pages_dir.mkdir(parents=True, exist_ok=True)
+    theme_dir.mkdir(parents=True, exist_ok=True)
     static_dir.mkdir(parents=True, exist_ok=True)
 
     for old_doc in docs_dir.glob("*.md"):
@@ -622,6 +757,14 @@ def generate_docusaurus_site(book: BookIR, site_dir: str | Path) -> SiteGenerati
     (pages_dir / "search.js").write_text(_search_page_js(), encoding="utf-8")
     (pages_dir / "quality-report.js").write_text(
         _quality_page_js(book),
+        encoding="utf-8",
+    )
+    (components_dir / "PdfCodeBlock.js").write_text(
+        _pdf_code_block_js(),
+        encoding="utf-8",
+    )
+    (theme_dir / "MDXComponents.js").write_text(
+        _mdx_components_js(),
         encoding="utf-8",
     )
     (static_dir / "search-index.json").write_text(

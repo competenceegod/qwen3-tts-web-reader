@@ -42,6 +42,8 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert (result.site_dir / "src/css/custom.css").exists()
     assert (result.site_dir / "src/pages/search.js").exists()
     assert (result.site_dir / "src/pages/quality-report.js").exists()
+    assert (result.site_dir / "src/components/PdfCodeBlock.js").exists()
+    assert (result.site_dir / "src/theme/MDXComponents.js").exists()
     assert (result.site_dir / "static/favicon.svg").exists()
     config = (result.site_dir / "docusaurus.config.mjs").read_text(encoding="utf-8")
     assert "favicon: 'favicon.svg'" in config
@@ -52,6 +54,19 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     css = (result.site_dir / "src/css/custom.css").read_text(encoding="utf-8")
     assert 'content: "On this page"' in css
     assert "border-left: 2px solid #d8e4ff" in css
+    assert ".booksite-pdf-code" in css
+    assert 'font-family: Consolas, "SFMono-Regular", Menlo, monospace' in css
+    assert "overflow-x: auto" in css
+    code_component = (
+        result.site_dir / "src/components/PdfCodeBlock.js"
+    ).read_text(encoding="utf-8")
+    assert "JSON.parse(atob(data))" in code_component
+    assert 'aria-label="Copy code"' in code_component
+    assert "navigator.clipboard.writeText" in code_component
+    mdx_components = (
+        result.site_dir / "src/theme/MDXComponents.js"
+    ).read_text(encoding="utf-8")
+    assert "PdfCodeBlock" in mdx_components
     search_index = json.loads(
         (result.site_dir / "static/search-index.json").read_text(encoding="utf-8")
     )
