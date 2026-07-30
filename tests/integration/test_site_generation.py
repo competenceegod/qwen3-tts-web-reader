@@ -42,7 +42,9 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert (result.site_dir / "src/css/custom.css").exists()
     assert (result.site_dir / "src/pages/search.js").exists()
     assert (result.site_dir / "src/pages/quality-report.js").exists()
+    assert (result.site_dir / "static/favicon.svg").exists()
     config = (result.site_dir / "docusaurus.config.mjs").read_text(encoding="utf-8")
+    assert "favicon: 'favicon.svg'" in config
     assert "to: '/quality-report'" in config
     assert "/quality-report.html" not in config
     assert "className: 'booksite-book-title'" in config
@@ -64,6 +66,10 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert "autoInstallPeers: false" in workspace_config
     assert "'@swc/core': true" in workspace_config
     assert "core-js: true" in workspace_config
+    search_page = (result.site_dir / "src/pages/search.js").read_text(encoding="utf-8")
+    assert 'role="status"' in search_page
+    assert 'aria-live="polite"' in search_page
+    assert "Search index could not be loaded." in search_page
 
     preview_server = result.site_dir / "serve-local.py"
     preview_launcher = result.site_dir / "打开网站.command"

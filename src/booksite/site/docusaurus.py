@@ -196,6 +196,7 @@ import rehypeKatex from 'rehype-katex';
 const config = {{
   title: {title},
   tagline: 'Local PDF book reader',
+  favicon: 'favicon.svg',
   url: 'http://localhost',
   baseUrl: '/',
   onBrokenLinks: 'throw',
@@ -248,6 +249,7 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 export default function SearchPage() {
   const [entries, setEntries] = useState([]);
   const [query, setQuery] = useState('');
+  const [loadError, setLoadError] = useState(false);
   const indexUrl = useBaseUrl('/search-index.json');
 
   useEffect(() => {
@@ -256,8 +258,14 @@ export default function SearchPage() {
         if (!response.ok) throw new Error(`Search index: ${response.status}`);
         return response.json();
       })
-      .then(setEntries)
-      .catch(() => setEntries([]));
+      .then((data) => {
+        setEntries(data);
+        setLoadError(false);
+      })
+      .catch(() => {
+        setEntries([]);
+        setLoadError(true);
+      });
   }, [indexUrl]);
 
   const results = useMemo(() => {
@@ -284,8 +292,12 @@ export default function SearchPage() {
             placeholder="Search chapters and text…"
           />
         </label>
-        <p className="booksite-search-count">
-          {query ? `${results.length} matching sections` : 'Browse indexed sections'}
+        <p className="booksite-search-count" role="status" aria-live="polite">
+          {loadError
+            ? 'Search index could not be loaded.'
+            : query
+              ? `${results.length} matching sections`
+              : 'Browse indexed sections'}
         </p>
         <ol className="booksite-search-results">
           {results.map((entry) => (
@@ -596,6 +608,16 @@ def generate_docusaurus_site(book: BookIR, site_dir: str | Path) -> SiteGenerati
     )
     (static_dir / "search-index.json").write_text(
         _search_index_json(book),
+        encoding="utf-8",
+    )
+    (static_dir / "favicon.svg").write_text(
+        (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+            '<rect width="64" height="64" rx="14" fill="#2457d6"/>'
+            '<path d="M17 15h24a7 7 0 0 1 7 7v27H24a7 7 0 0 0-7 7z" fill="#fff"/>'
+            '<path d="M24 22h17v5H24zm0 10h17v5H24z" fill="#2457d6"/>'
+            "</svg>\n"
+        ),
         encoding="utf-8",
     )
     (css_dir / "custom.css").write_text(_custom_css(), encoding="utf-8")

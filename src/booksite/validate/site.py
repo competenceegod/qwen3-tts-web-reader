@@ -45,6 +45,15 @@ def validate_content(book: BookIR, site_dir: str | Path) -> ValidationResult:
     return result
 
 
+def _remove_generated_static_asset_copies(build_dir: Path) -> None:
+    assets_dir = build_dir / "assets"
+    if not assets_dir.is_dir():
+        return
+    for candidate in assets_dir.iterdir():
+        if candidate.is_dir() and (candidate / ".booksite-generated").is_file():
+            shutil.rmtree(candidate)
+
+
 def build_docusaurus(site_dir: str | Path, log_dir: str | Path) -> Path:
     target = Path(site_dir)
     logs = Path(log_dir)
@@ -83,4 +92,5 @@ def build_docusaurus(site_dir: str | Path, log_dir: str | Path) -> Path:
     )
     if install.returncode or build.returncode:
         raise RuntimeError(f"Docusaurus build failed; see {log_path}")
+    _remove_generated_static_asset_copies(target / "build")
     return log_path

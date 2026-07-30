@@ -18,10 +18,16 @@ Additional output and fidelity requirements:
 - `--output` identifies a collection root. Each PDF is generated into
   `<output>/<normalized-pdf-name>-<source-hash>/` so converting another PDF
   cannot overwrite or mix with an existing book.
-- Reprocessing the same PDF updates only its stable book directory.
+- A full-hash manifest verifies directory ownership; path traversal, symbolic
+  link targets, short-hash collisions, and legacy flat roots are rejected.
+- Reprocessing the same PDF updates only its stable book directory, using
+  staging and promotion so a failed rerun preserves the previous site.
 - Monospace code keeps PDF-leading indentation, including short delimiter
-  lines. Bullet glyphs are emitted as semantic Markdown lists, and adjacent
-  list blocks remain one list.
+  lines and intentional blank lines. Bullet glyphs are emitted as semantic
+  Markdown lists, adjacent list blocks remain one list, and PDF x coordinates
+  restore nested list levels.
+- Bookmark headings are emitted at their matching PDF block position, not
+  unconditionally at the beginning of the source page.
 
 ## Scope and assumptions
 
@@ -163,7 +169,8 @@ def stable_slug(title: str, source_page: int) -> str:
 
 - One command converts a text-layer PDF into a generated Docusaurus site.
 - Different PDFs written to the same output root produce different stable
-  book directories and never delete or reuse each other's content.
+  book directories and never delete or reuse each other's content; full source
+  hashes remain authoritative if readable IDs collide.
 - Code indentation and semantic list structure are preserved in generated
   Markdown and rendered HTML.
 - The production Docusaurus build succeeds.
