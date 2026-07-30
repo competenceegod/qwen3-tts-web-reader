@@ -134,8 +134,69 @@ def test_adjacent_list_blocks_preserve_pdf_nesting_from_horizontal_position() ->
 
     assert (
         "- Advantages of local models:\n"
-        "  - Complete data control and privacy\n"
-        "  - No API costs or usage limits\n"
+        "    - Complete data control and privacy\n"
+        "    - No API costs or usage limits\n"
         "- Advantages of cloud models:\n"
-        "  - No hardware requirements"
+        "    - No hardware requirements"
+    ) in markdown
+
+
+def test_nested_bullets_under_ordered_item_use_commonmark_content_indent() -> None:
+    page = PageIR(
+        page_index=0,
+        width=500,
+        height=600,
+        native_text="review question",
+        native_text_char_count=15,
+        blocks=[
+            BlockIR(
+                block_id="p0001-b001",
+                page_index=0,
+                order=0,
+                type="list",
+                bbox=(85.7, 100, 450, 115),
+                text="1. Which options apply?",
+                markdown="1. Which options apply?",
+                source_engine="native",
+            ),
+            BlockIR(
+                block_id="p0001-b002",
+                page_index=0,
+                order=1,
+                type="list",
+                bbox=(116.2, 120, 450, 135),
+                text="• First choice",
+                markdown="- First choice",
+                source_engine="native",
+            ),
+            BlockIR(
+                block_id="p0001-b003",
+                page_index=0,
+                order=2,
+                type="list",
+                bbox=(116.2, 140, 450, 155),
+                text="• Second choice",
+                markdown="- Second choice",
+                source_engine="native",
+            ),
+        ],
+        primary_engine="native",
+        selected_engine="native",
+        quality_score=1.0,
+    )
+    section = TocEntry(
+        level=1,
+        title="Review",
+        start_page=1,
+        end_page=1,
+        source="pdf_bookmark",
+        slug="review",
+    )
+
+    markdown = _section_markdown(section, [page], {1: []})
+
+    assert (
+        "1. Which options apply?\n"
+        "    - First choice\n"
+        "    - Second choice"
     ) in markdown

@@ -329,7 +329,7 @@ def _indent_list(markdown: str, base_x: float | None, block: BlockIR) -> str:
     if base_x is None or block.bbox is None:
         return markdown
     level = max(0, round((block.bbox[0] - base_x) / _LIST_INDENT_POINTS))
-    prefix = "  " * level
+    prefix = "    " * level
     return "\n".join(f"{prefix}{line}" if line else line for line in markdown.splitlines())
 
 
