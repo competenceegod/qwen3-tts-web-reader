@@ -132,7 +132,7 @@ class PipelineRunner:
                     )
                 )
 
-        target_site = Path(site_dir).resolve()
+        target_site = Path(site_dir).resolve() / book.book_id
         extract_native_assets(
             source,
             book,
