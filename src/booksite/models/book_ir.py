@@ -94,7 +94,11 @@ class WarningIR(BaseModel):
 
 class BookIR(BaseModel):
     schema_version: str = "1.0"
-    book_id: str
+    book_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+    )
     source_pdf: Path
     source_sha256: str
     title: str | None = None

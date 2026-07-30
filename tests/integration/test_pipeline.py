@@ -1,6 +1,9 @@
+import hashlib
+import json
 from pathlib import Path
 
 import pymupdf
+import pytest
 
 from booksite.config import PipelineConfig
 from booksite.pipeline import PipelineRunner
@@ -71,3 +74,130 @@ def test_pipeline_keeps_different_pdfs_in_separate_site_directories(tmp_path: Pa
     assert first_marker.read_text(encoding="utf-8") == "preserve me"
     assert (first.site_dir / "docs").is_dir()
     assert (second.site_dir / "docs").is_dir()
+
+
+def test_pipeline_rejects_symlinked_book_target(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "input.pdf"
+    _write_test_pdf(pdf_path, "A Test Book")
+    output_root = tmp_path / "site"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    runner = PipelineRunner(
+        PipelineConfig.model_validate({"docling": {"enabled": False}}),
+        workspace_root=tmp_path / "workspace",
+    )
+    book_id, _ = runner._identity(pdf_path.resolve())
+    output_root.mkdir()
+    (output_root / book_id).symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symbolic link"):
+        runner.run_all(pdf_path, output_root, build_site=False)
+
+    assert list(outside.iterdir()) == []
+
+
+def test_pipeline_ignores_cache_with_poisoned_book_id(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "input.pdf"
+    _write_test_pdf(pdf_path, "A Test Book")
+    runner = PipelineRunner(
+        PipelineConfig.model_validate({"docling": {"enabled": False}}),
+        workspace_root=tmp_path / "workspace",
+    )
+    report, _, _ = runner.audit(pdf_path)
+    stage = f"audit-pages-all-{runner.config_fingerprint}"
+    cache_path = runner.cache.stage_path(report.book_id, stage)
+    poisoned = json.loads(cache_path.read_text(encoding="utf-8"))
+    poisoned["book_id"] = "../../outside"
+    cache_path.write_text(json.dumps(poisoned), encoding="utf-8")
+
+    refreshed, _, used_cache = runner.audit(pdf_path)
+
+    assert used_cache is False
+    assert refreshed.book_id == report.book_id
+
+
+def test_pipeline_rejects_legacy_flat_site_root(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "input.pdf"
+    _write_test_pdf(pdf_path, "A Test Book")
+    output_root = tmp_path / "site"
+    (output_root / "docs").mkdir(parents=True)
+    (output_root / "package.json").write_text("{}\n", encoding="utf-8")
+    runner = PipelineRunner(
+        PipelineConfig.model_validate({"docling": {"enabled": False}}),
+        workspace_root=tmp_path / "workspace",
+    )
+
+    with pytest.raises(RuntimeError, match="legacy flat Docusaurus site"):
+        runner.run_all(pdf_path, output_root, build_site=False)
+
+
+def test_pipeline_rejects_book_id_collision_using_full_hash_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_pdf = tmp_path / "First.pdf"
+    second_pdf = tmp_path / "Second.pdf"
+    _write_test_pdf(first_pdf, "First")
+    _write_test_pdf(second_pdf, "Second")
+    runner = PipelineRunner(
+        PipelineConfig.model_validate({"docling": {"enabled": False}}),
+        workspace_root=tmp_path / "workspace",
+    )
+    monkeypatch.setattr("booksite.pipeline.book_id_for_source", lambda *_: "forced-id")
+    monkeypatch.setattr("booksite.pdf.audit.book_id_for_source", lambda *_: "forced-id")
+    output_root = tmp_path / "site"
+
+    first = runner.run_all(first_pdf, output_root, build_site=False)
+
+    with pytest.raises(RuntimeError, match="different source PDF"):
+        runner.run_all(second_pdf, output_root, build_site=False)
+
+    manifest = json.loads(
+        (first.site_dir / ".booksite-site.json").read_text(encoding="utf-8")
+    )
+    assert manifest["source_sha256"] == hashlib.sha256(first_pdf.read_bytes()).hexdigest()
+
+
+def test_failed_regeneration_preserves_previous_site(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_path = tmp_path / "input.pdf"
+    _write_test_pdf(pdf_path, "A Test Book")
+    runner = PipelineRunner(
+        PipelineConfig.model_validate({"docling": {"enabled": False}}),
+        workspace_root=tmp_path / "workspace",
+    )
+    first = runner.run_all(pdf_path, tmp_path / "site", build_site=False)
+    existing_doc = next((first.site_dir / "docs").glob("*.md"))
+    original = existing_doc.read_text(encoding="utf-8")
+
+    def fail_generation(book: object, site_dir: str | Path) -> None:
+        damaged = Path(site_dir) / "docs"
+        damaged.mkdir(parents=True, exist_ok=True)
+        (damaged / existing_doc.name).write_text("damaged", encoding="utf-8")
+        raise RuntimeError("synthetic generation failure")
+
+    monkeypatch.setattr("booksite.pipeline.generate_docusaurus_site", fail_generation)
+
+    with pytest.raises(RuntimeError, match="synthetic generation failure"):
+        runner.run_all(pdf_path, tmp_path / "site", build_site=False)
+
+    assert existing_doc.read_text(encoding="utf-8") == original
+
+
+def test_no_build_regeneration_does_not_leave_stale_build(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "input.pdf"
+    _write_test_pdf(pdf_path, "A Test Book")
+    runner = PipelineRunner(
+        PipelineConfig.model_validate({"docling": {"enabled": False}}),
+        workspace_root=tmp_path / "workspace",
+    )
+    first = runner.run_all(pdf_path, tmp_path / "site", build_site=False)
+    stale_index = first.site_dir / "build" / "index.html"
+    stale_index.parent.mkdir()
+    stale_index.write_text("stale", encoding="utf-8")
+
+    refreshed = runner.run_all(pdf_path, tmp_path / "site", build_site=False)
+
+    assert not (refreshed.site_dir / "build").exists()

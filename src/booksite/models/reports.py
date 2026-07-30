@@ -39,7 +39,11 @@ class PageAudit(BaseModel):
 class AuditReport(BaseModel):
     source_pdf: Path
     source_sha256: str
-    book_id: str
+    book_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+    )
     title: str | None
     author: str | None
     language: str | None
