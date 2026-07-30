@@ -51,13 +51,26 @@ uv run booksite all /绝对路径/你的书.pdf \
   --max-pages 100
 ```
 
-构建完成后本地预览：
+构建完成后，macOS 可直接双击：
 
 ```bash
+open site/打开网站.command
+```
+
+它会启动仅监听本机的 HTTP 服务并自动打开浏览器。阅读期间保持终端窗口开启，
+按 `Control-C` 停止。请勿直接双击 `site/build/index.html`：Docusaurus 的
+静态资源和页面路由需要通过 HTTP 访问，`file://` 会导致页面加载失败，把
+`baseUrl` 改成本机文件路径也无法正确部署。
+
+也可以使用命令行预览：
+
+```bash
+python3 site/serve-local.py
+# 或使用 Docusaurus 自带的预览服务
 pnpm --dir site serve
 ```
 
-浏览器访问 `http://localhost:3000/`。生成站点包括：
+浏览器访问命令输出的本地地址。生成站点包括：
 
 - 左侧全书目录、正文阅读区、右侧页内目录
 - KaTeX 数学公式和带复制按钮的代码块
@@ -86,7 +99,9 @@ uv run booksite validate book.pdf --output site --max-pages 100
 
 ```text
 site/                       最近一次生成的 Docusaurus 站点
-site/build/                 可直接部署的静态文件
+site/build/                 可部署的静态文件（本地需通过 HTTP 打开）
+site/打开网站.command       macOS 双击预览入口
+site/serve-local.py         无第三方依赖的本地预览服务器
 workspace/cache/            可恢复的阶段缓存
 workspace/intermediate/     audit.json、BookIR、可选 Docling 产物
 workspace/reports/          summary.json、HTML、CSV、warnings、构建日志

@@ -77,6 +77,9 @@ python3 -m venv .venv-core
 .venv-core/bin/ruff check .
 pnpm --dir site build
 pnpm --dir site serve
+
+# Open the production build locally on macOS
+open site/打开网站.command
 ```
 
 ## Project structure
@@ -113,6 +116,9 @@ def stable_slug(title: str, source_page: int) -> str:
 - The real sample PDF is an explicit end-to-end acceptance run limited to the
   first 100 pages.
 - Docusaurus production build is a hard gate.
+- Generated sites include a dependency-free local HTTP preview server and a
+  macOS double-click launcher. Direct `file://` access to `build/index.html` is
+  unsupported because Docusaurus emits site-root asset and route URLs.
 - Browser verification checks the home document, left sidebar, right TOC,
   multiple generated pages, source-page labels, desktop layout, and mobile
   overflow.
@@ -145,6 +151,8 @@ def stable_slug(title: str, source_page: int) -> str:
 
 - One command converts a text-layer PDF into a generated Docusaurus site.
 - The production Docusaurus build succeeds.
+- A generated production build can be opened through the bundled local preview
+  launcher without changing `baseUrl` to a machine-specific file path.
 - Every processed PDF page has a PageIR record, including empty-text pages.
 - All in-range PDF bookmarks appear in the resolved table of contents.
 - Stable slugs do not change across identical runs.

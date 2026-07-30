@@ -1,5 +1,9 @@
 import json
+import stat
+import subprocess
+import sys
 from pathlib import Path
+from urllib.request import urlopen
 
 from booksite.models.book_ir import BookIR, SectionIR
 from booksite.site.docusaurus import generate_docusaurus_site
@@ -60,3 +64,44 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert "autoInstallPeers: false" in workspace_config
     assert "'@swc/core': true" in workspace_config
     assert "core-js: true" in workspace_config
+
+    preview_server = result.site_dir / "serve-local.py"
+    preview_launcher = result.site_dir / "打开网站.command"
+    preview_guide = result.site_dir / "本地打开说明.txt"
+    assert preview_server.exists()
+    assert preview_launcher.exists()
+    assert preview_launcher.stat().st_mode & stat.S_IXUSR
+    assert "serve-local.py" in preview_launcher.read_text(encoding="utf-8")
+    assert "不要直接双击 build/index.html" in preview_guide.read_text(encoding="utf-8")
+
+    build_dir = result.site_dir / "build"
+    build_dir.mkdir()
+    (build_dir / "index.html").write_text(
+        "<!doctype html><title>Local preview works</title>",
+        encoding="utf-8",
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(preview_server),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--no-open",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        output_line = process.stdout.readline().strip()
+        assert output_line.startswith("本地网站：http://127.0.0.1:")
+        preview_url = output_line.removeprefix("本地网站：")
+        with urlopen(preview_url, timeout=3) as response:
+            assert response.status == 200
+            assert b"Local preview works" in response.read()
+    finally:
+        process.terminate()
+        process.wait(timeout=3)
