@@ -151,6 +151,15 @@ def stable_slug(title: str, source_page: int) -> str:
 - Selecting text inside the book article reveals an accessible “Qwen3 朗读”
   action. The reader provides loading, playing, paused, stopped, and error
   states plus playback-speed control.
+- The selection action offers both a one-off reading and a continuous reading
+  mode. Continuous reading starts at the exact selection position, proceeds
+  sentence by sentence to the end of the current document, highlights the
+  active sentence without mutating the rendered book DOM, and smoothly centers
+  that sentence in the viewport.
+- While continuous reading is loading, playing, or paused, Space pauses or
+  resumes playback and prevents its normal page-scroll action. The shortcut
+  never captures Space from inputs, selects, textareas, buttons, or editable
+  content, and the visible player identifies the shortcut.
 - Qwen3-TTS audio is streamed from the local model into the browser instead of
   waiting for the complete utterance. On the sample Apple M4 machine, a warmed
   model should start audible playback within 2 seconds for a typical
@@ -219,6 +228,13 @@ def stable_slug(title: str, source_page: int) -> str:
   first playable audio chunk before the whole utterance finishes. Warm
   click-to-audio latency is at most 2 seconds on the sample Apple M4 machine,
   and stopping playback closes the stream without waiting for full synthesis.
+- From a selection inside prose, headings, lists, callouts, or code, continuous
+  reading creates an ordered queue beginning at that selection and ending at
+  the current document boundary. Each active queue item has exactly one visible
+  highlight, is centered when it starts, and is removed after stop, completion,
+  error, unmount, or document navigation.
+- Space toggles pause and resume only for an active continuous-reading session;
+  editable controls retain their native Space behavior.
 - Without a compatible local model or optional MLX runtime, the book remains
   readable and the TTS control reports a useful setup error.
 - Empty, oversized, malformed, non-JSON, concurrent, and non-loopback TTS

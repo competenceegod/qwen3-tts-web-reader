@@ -318,9 +318,10 @@ macOS：
 Qwen3-TTS 朗读：
 1. 启动脚本会复用 PDFgear 已下载的 Qwen3-TTS 模型，不会再复制模型。
 2. 第一次启动可能需要通过 uv 安装约 100 MB 的 MLX 运行库。
-3. 在正文中选择文字，点击“Qwen3 朗读”；可暂停、继续、停止和调速。
-4. 文字和语音只在本机处理，本地接口只接受 127.0.0.1/::1 请求。
-5. 若未安装 uv，网站仍可正常阅读，但朗读功能不可用。
+3. 选择文字后，可以只朗读选中内容，或从选择位置连续朗读到当前文档末尾。
+4. 连续朗读会高亮并居中当前句；按空格键暂停或继续，也可停止和调速。
+5. 文字和语音只在本机处理，本地接口只接受 127.0.0.1/::1 请求。
+6. 若未安装 uv，网站仍可正常阅读，但朗读功能不可用。
 
 命令行：
 uv run --no-project --python 3.12 --with 'mlx-audio==0.4.5' python serve-local.py
@@ -332,12 +333,27 @@ pnpm serve
 """
 
 
-def _selection_tts_reader_js() -> str:
-    return """import React, {useCallback, useEffect, useRef, useState} from 'react';
-
+def _reading_queue_js() -> str:
+    return """
 const MAX_TEXT_CHARACTERS = 2000;
+const HIGHLIGHT_NAME = 'booksite-tts-current';
+const BLOCK_SELECTOR = 'p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, figcaption';
+const SKIPPED_SELECTOR = [
+  'button',
+  'input',
+  'textarea',
+  'select',
+  'script',
+  'style',
+  '.hash-link',
+  '[aria-hidden="true"]',
+].join(', ');
 
-function selectionDetails() {
+export function clearReadingHighlight() {
+  CSS.highlights?.delete(HIGHLIGHT_NAME);
+}
+
+export function selectionDetails() {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
   const text = selection.toString().replace(/\\s+/gu, ' ').trim();
@@ -350,12 +366,199 @@ function selectionDetails() {
   if (!rect.width && !rect.height) return null;
   return {
     text,
-    top: Math.max(12, rect.top - 46),
-    left: Math.min(window.innerWidth - 132, Math.max(12, rect.left + rect.width / 2 - 58)),
+    range: range.cloneRange(),
+    top: Math.max(12, rect.top - 52),
+    left: Math.max(
+      12,
+      Math.min(window.innerWidth - 300, rect.left + rect.width / 2 - 142),
+    ),
   };
 }
 
+function readableTextNodes(article) {
+  const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.data.trim() || node.parentElement?.closest(SKIPPED_SELECTOR)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  return nodes;
+}
+
+function readingDocument(article) {
+  const segments = [];
+  let text = '';
+  let previousBlock = null;
+  for (const node of readableTextNodes(article)) {
+    const block = node.parentElement?.closest(BLOCK_SELECTOR);
+    if (text) {
+      if (block !== previousBlock) text += '\\n';
+      else if (!/\\s$/u.test(text) && !/^\\s/u.test(node.data)) text += ' ';
+    }
+    const start = text.length;
+    text += node.data;
+    segments.push({node, start, end: text.length});
+    previousBlock = block;
+  }
+  return {text, segments};
+}
+
+function selectionStartOffset(range, segments) {
+  const exact = segments.find((segment) => segment.node === range.startContainer);
+  if (exact) {
+    return exact.start + Math.min(range.startOffset, exact.node.data.length);
+  }
+  const collapsed = range.cloneRange();
+  collapsed.collapse(true);
+  for (const segment of segments) {
+    const nodeRange = document.createRange();
+    nodeRange.selectNodeContents(segment.node);
+    if (collapsed.compareBoundaryPoints(Range.START_TO_END, nodeRange) <= 0) {
+      return segment.start;
+    }
+  }
+  return segments.at(-1)?.end ?? 0;
+}
+
+function sentenceBounds(text) {
+  if ('Segmenter' in Intl) {
+    const segmenter = new Intl.Segmenter(document.documentElement.lang || undefined, {
+      granularity: 'sentence',
+    });
+    return Array.from(segmenter.segment(text), ({index, segment}) => ({
+      start: index,
+      end: index + segment.length,
+    }));
+  }
+  const bounds = [];
+  const pattern = /[^.!?。！？\\n]+(?:[.!?。！？]+|\\n|$)/gu;
+  for (const match of text.matchAll(pattern)) {
+    bounds.push({start: match.index, end: match.index + match[0].length});
+  }
+  return bounds;
+}
+
+function trimBounds(text, start, end) {
+  while (start < end && /\\s/u.test(text[start])) start += 1;
+  while (end > start && /\\s/u.test(text[end - 1])) end -= 1;
+  return {start, end};
+}
+
+function safeSizedBounds(text, start, end) {
+  const chunks = [];
+  let cursor = start;
+  while (cursor < end) {
+    let chunkEnd = Math.min(cursor + MAX_TEXT_CHARACTERS, end);
+    if (chunkEnd < end) {
+      const candidate = text.slice(cursor, chunkEnd);
+      const breakAt = Math.max(candidate.lastIndexOf(' '), candidate.lastIndexOf('\\n'));
+      if (breakAt > MAX_TEXT_CHARACTERS / 2) chunkEnd = cursor + breakAt + 1;
+    }
+    const trimmed = trimBounds(text, cursor, chunkEnd);
+    if (trimmed.start < trimmed.end) chunks.push(trimmed);
+    cursor = chunkEnd;
+  }
+  return chunks;
+}
+
+function startPoint(segments, offset) {
+  for (const segment of segments) {
+    if (offset <= segment.end) {
+      return {
+        node: segment.node,
+        offset: Math.max(0, Math.min(offset - segment.start, segment.node.data.length)),
+      };
+    }
+  }
+  const last = segments.at(-1);
+  return last ? {node: last.node, offset: last.node.data.length} : null;
+}
+
+function endPoint(segments, offset) {
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const segment = segments[index];
+    if (offset >= segment.start) {
+      return {
+        node: segment.node,
+        offset: Math.max(0, Math.min(offset - segment.start, segment.node.data.length)),
+      };
+    }
+  }
+  const first = segments[0];
+  return first ? {node: first.node, offset: 0} : null;
+}
+
+function rangeFromBounds(segments, start, end) {
+  const from = startPoint(segments, start);
+  const to = endPoint(segments, end);
+  if (!from || !to) return null;
+  const range = document.createRange();
+  range.setStart(from.node, from.offset);
+  range.setEnd(to.node, to.offset);
+  return range.collapsed ? null : range;
+}
+
+export function readingQueueFromSelection(selectionRange) {
+  const startNode = selectionRange.startContainer;
+  const startElement = startNode.nodeType === Node.ELEMENT_NODE
+    ? startNode
+    : startNode.parentElement;
+  const article = startElement?.closest('.theme-doc-markdown');
+  if (!article) return [];
+  const {text, segments} = readingDocument(article);
+  if (!segments.length) return [];
+  const selectionOffset = selectionStartOffset(selectionRange, segments);
+  const queue = [];
+  for (const sentence of sentenceBounds(text)) {
+    if (sentence.end <= selectionOffset) continue;
+    const start = Math.max(sentence.start, selectionOffset);
+    for (const bounds of safeSizedBounds(text, start, sentence.end)) {
+      const range = rangeFromBounds(segments, bounds.start, bounds.end);
+      const spokenText = range?.toString().replace(/\\s+/gu, ' ').trim();
+      if (range && spokenText) queue.push({text: spokenText, range});
+    }
+  }
+  return queue;
+}
+
+export function highlightAndCenter(range) {
+  if (CSS.highlights && typeof Highlight !== 'undefined') {
+    CSS.highlights.set(HIGHLIGHT_NAME, new Highlight(range));
+  }
+  const rect = range.getBoundingClientRect();
+  if (rect.width || rect.height) {
+    window.scrollTo({
+      top: Math.max(0, window.scrollY + rect.top + rect.height / 2 - window.innerHeight / 2),
+      behavior: 'smooth',
+    });
+  }
+}
+
+export function isEditableTarget(target) {
+  return target instanceof Element && Boolean(
+    target.closest('input, textarea, select, button, [contenteditable="true"], [role="textbox"]'),
+  );
+}
+"""
+
+
+def _selection_tts_reader_js() -> str:
+    return """import React, {useCallback, useEffect, useRef, useState} from 'react';
+import {useLocation} from '@docusaurus/router';
+import {
+  clearReadingHighlight,
+  highlightAndCenter,
+  isEditableTarget,
+  readingQueueFromSelection,
+  selectionDetails,
+} from './readingQueue';
+
 export default function SelectionTtsReader() {
+  const location = useLocation();
   const [selection, setSelection] = useState(null);
   const [state, setState] = useState('idle');
   const [message, setMessage] = useState('选择正文文字即可朗读');
@@ -363,12 +566,18 @@ export default function SelectionTtsReader() {
   const audioContextRef = useRef(null);
   const audioSourcesRef = useRef(new Set());
   const abortRef = useRef(null);
+  const pendingPlaybackRef = useRef(null);
   const requestStartedAtRef = useRef(0);
   const playbackIdRef = useRef(0);
   const speedRef = useRef(1);
+  const continuousRef = useRef(false);
+  const progressRef = useRef('');
+  const pathnameRef = useRef(location.pathname);
 
   const releaseAudio = useCallback(() => {
     playbackIdRef.current += 1;
+    pendingPlaybackRef.current?.resolve();
+    pendingPlaybackRef.current = null;
     for (const source of audioSourcesRef.current) {
       source.onended = null;
       try {
@@ -381,137 +590,240 @@ export default function SelectionTtsReader() {
     const context = audioContextRef.current;
     audioContextRef.current = null;
     if (context && context.state !== 'closed') void context.close();
+    clearReadingHighlight();
   }, []);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    continuousRef.current = false;
+    progressRef.current = '';
     releaseAudio();
     setState('stopped');
     setMessage('已停止');
   }, [releaseAudio]);
 
-  const speak = useCallback(async (text) => {
+  const playStream = useCallback(async (
+    text,
+    audioContext,
+    controller,
+    playbackId,
+    onStarted,
+  ) => {
+    const response = await fetch('/api/tts', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text}),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `本地语音服务返回 ${response.status}`);
+    }
+    const payload = await response.json();
+    if (
+      typeof payload.streamUrl !== 'string'
+      || !payload.streamUrl.startsWith('/api/tts/stream/')
+    ) {
+      throw new Error('本地语音服务返回了无效的流地址。');
+    }
+    const streamResponse = await fetch(payload.streamUrl, {signal: controller.signal});
+    if (!streamResponse.ok || !streamResponse.body) {
+      throw new Error(`本地音频流返回 ${streamResponse.status}`);
+    }
+
+    const localSources = new Set();
+    let resolvePlayback;
+    const playbackComplete = new Promise((resolve) => {
+      resolvePlayback = resolve;
+    });
+    pendingPlaybackRef.current = {playbackId, resolve: resolvePlayback};
+    const reader = streamResponse.body.getReader();
+    let headerBytesRemaining = 44;
+    let leftover = new Uint8Array(0);
+    let nextStartTime = 0;
+    let receivedAudio = false;
+    let streamFinished = false;
+
+    function finishIfReady() {
+      if (
+        streamFinished
+        && localSources.size === 0
+        && playbackIdRef.current === playbackId
+      ) {
+        if (pendingPlaybackRef.current?.playbackId === playbackId) {
+          pendingPlaybackRef.current = null;
+        }
+        resolvePlayback();
+      }
+    }
+
+    function schedulePcm(pcmBytes) {
+      const combined = new Uint8Array(leftover.length + pcmBytes.length);
+      combined.set(leftover);
+      combined.set(pcmBytes, leftover.length);
+      const usableLength = combined.length - (combined.length % 2);
+      leftover = combined.slice(usableLength);
+      if (!usableLength) return;
+
+      const samples = new Float32Array(usableLength / 2);
+      const view = new DataView(combined.buffer, combined.byteOffset, usableLength);
+      for (let index = 0; index < samples.length; index += 1) {
+        samples[index] = view.getInt16(index * 2, true) / 32768;
+      }
+      const buffer = audioContext.createBuffer(1, samples.length, 24000);
+      buffer.copyToChannel(samples, 0);
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = speedRef.current;
+      source.connect(audioContext.destination);
+      const startAt = Math.max(
+        audioContext.currentTime + (receivedAudio ? 0 : 0.03),
+        nextStartTime,
+      );
+      nextStartTime = startAt + buffer.duration / speedRef.current;
+      localSources.add(source);
+      audioSourcesRef.current.add(source);
+      source.onended = () => {
+        localSources.delete(source);
+        audioSourcesRef.current.delete(source);
+        finishIfReady();
+      };
+      source.start(startAt);
+      if (!receivedAudio) {
+        receivedAudio = true;
+        onStarted();
+      }
+    }
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      let audioBytes = value;
+      if (headerBytesRemaining) {
+        const skipped = Math.min(headerBytesRemaining, audioBytes.length);
+        headerBytesRemaining -= skipped;
+        audioBytes = audioBytes.slice(skipped);
+      }
+      if (audioBytes.length) schedulePcm(audioBytes);
+    }
+    if (!receivedAudio) throw new Error('本地语音服务没有返回音频。');
+    streamFinished = true;
+    finishIfReady();
+    await playbackComplete;
+    if (controller.signal.aborted || playbackIdRef.current !== playbackId) {
+      throw new DOMException('朗读已停止', 'AbortError');
+    }
+  }, []);
+
+  const startReading = useCallback(async (items, continuous) => {
+    if (!items.length) {
+      setSelection(null);
+      setState('error');
+      setMessage('无法从此处识别可朗读的正文。');
+      return;
+    }
     abortRef.current?.abort();
     releaseAudio();
     const controller = new AbortController();
     abortRef.current = controller;
+    continuousRef.current = continuous;
     requestStartedAtRef.current = Date.now();
     const playbackId = playbackIdRef.current;
     setSelection(null);
+    window.getSelection()?.removeAllRanges();
     setState('loading');
-    setMessage('正在生成首段语音…');
     try {
       const audioContext = new AudioContext();
       audioContextRef.current = audioContext;
       await audioContext.resume();
-      const response = await fetch('/api/tts', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({text}),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || `本地语音服务返回 ${response.status}`);
-      }
-      const payload = await response.json();
-      if (
-        typeof payload.streamUrl !== 'string'
-        || !payload.streamUrl.startsWith('/api/tts/stream/')
-      ) {
-        throw new Error('本地语音服务返回了无效的流地址。');
-      }
-      const streamResponse = await fetch(payload.streamUrl, {
-        signal: controller.signal,
-      });
-      if (!streamResponse.ok || !streamResponse.body) {
-        throw new Error(`本地音频流返回 ${streamResponse.status}`);
-      }
-
-      const reader = streamResponse.body.getReader();
-      let headerBytesRemaining = 44;
-      let leftover = new Uint8Array(0);
-      let nextStartTime = 0;
-      let receivedAudio = false;
-      let streamFinished = false;
-
-      function finishIfReady() {
-        if (
-          streamFinished
-          && audioSourcesRef.current.size === 0
-          && playbackIdRef.current === playbackId
-        ) {
-          setState('stopped');
-          setMessage('朗读完成');
-          releaseAudio();
-        }
-      }
-
-      function schedulePcm(pcmBytes) {
-        const combined = new Uint8Array(leftover.length + pcmBytes.length);
-        combined.set(leftover);
-        combined.set(pcmBytes, leftover.length);
-        const usableLength = combined.length - (combined.length % 2);
-        leftover = combined.slice(usableLength);
-        if (!usableLength) return;
-
-        const samples = new Float32Array(usableLength / 2);
-        const view = new DataView(combined.buffer, combined.byteOffset, usableLength);
-        for (let index = 0; index < samples.length; index += 1) {
-          samples[index] = view.getInt16(index * 2, true) / 32768;
-        }
-        const buffer = audioContext.createBuffer(1, samples.length, 24000);
-        buffer.copyToChannel(samples, 0);
-        const source = audioContext.createBufferSource();
-        source.buffer = buffer;
-        source.playbackRate.value = speedRef.current;
-        source.connect(audioContext.destination);
-        const startAt = Math.max(
-          audioContext.currentTime + (receivedAudio ? 0 : 0.03),
-          nextStartTime,
+      for (let index = 0; index < items.length; index += 1) {
+        if (controller.signal.aborted) throw new DOMException('朗读已停止', 'AbortError');
+        const item = items[index];
+        if (continuous && item.range) highlightAndCenter(item.range);
+        const progress = continuous ? `第 ${index + 1}/${items.length} 句` : '';
+        progressRef.current = progress;
+        setState(audioContext.state === 'suspended' ? 'paused' : 'loading');
+        setMessage(`正在生成${progress ? ` · ${progress}` : '首段语音'}…`);
+        await playStream(
+          item.text,
+          audioContext,
+          controller,
+          playbackId,
+          () => {
+            const startupSeconds = (Date.now() - requestStartedAtRef.current) / 1000;
+            if (audioContext.state === 'suspended') {
+              setState('paused');
+              setMessage(`已暂停${progress ? ` · ${progress}` : ''}`);
+            } else {
+              setState('playing');
+              setMessage(
+                continuous
+                  ? `正在连续朗读 · ${progress}`
+                  : `正在流式朗读 · ${startupSeconds.toFixed(1)} 秒启动`,
+              );
+            }
+          },
         );
-        nextStartTime = startAt + buffer.duration / speedRef.current;
-        audioSourcesRef.current.add(source);
-        source.onended = () => {
-          audioSourcesRef.current.delete(source);
-          finishIfReady();
-        };
-        source.start(startAt);
-        if (!receivedAudio) {
-          receivedAudio = true;
-          const startupSeconds = (Date.now() - requestStartedAtRef.current) / 1000;
-          setState('playing');
-          setMessage(`正在流式朗读 · ${startupSeconds.toFixed(1)} 秒启动`);
-        }
       }
-
-      while (true) {
-        const {done, value} = await reader.read();
-        if (done) break;
-        let audioBytes = value;
-        if (headerBytesRemaining) {
-          const skipped = Math.min(headerBytesRemaining, audioBytes.length);
-          headerBytesRemaining -= skipped;
-          audioBytes = audioBytes.slice(skipped);
-        }
-        if (audioBytes.length) schedulePcm(audioBytes);
-      }
-      if (!receivedAudio) throw new Error('本地语音服务没有返回音频。');
-      streamFinished = true;
-      finishIfReady();
+      continuousRef.current = false;
+      progressRef.current = '';
+      setState('stopped');
+      setMessage(continuous ? '连续朗读完成' : '朗读完成');
+      releaseAudio();
     } catch (error) {
       if (error.name === 'AbortError') return;
+      continuousRef.current = false;
+      progressRef.current = '';
       setState('error');
       setMessage(error.message || '本地语音生成失败。');
       releaseAudio();
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
     }
-  }, [releaseAudio, speed]);
+  }, [playStream, releaseAudio]);
+
+  const speakSelection = useCallback((details) => {
+    void startReading([{text: details.text, range: null}], false);
+  }, [startReading]);
+
+  const speakContinuously = useCallback((details) => {
+    void startReading(readingQueueFromSelection(details.range), true);
+  }, [startReading]);
+
+  const togglePause = useCallback(() => {
+    const audioContext = audioContextRef.current;
+    if (!audioContext) return;
+    if (audioContext.state === 'running') {
+      audioContext.suspend().then(() => {
+        setState('paused');
+        setMessage(
+          continuousRef.current
+            ? `已暂停 · ${progressRef.current} · 空格键继续`
+            : '已暂停',
+        );
+      });
+    } else {
+      audioContext.resume().then(() => {
+        setState('playing');
+        setMessage(
+          continuousRef.current
+            ? `正在连续朗读 · ${progressRef.current}`
+            : '正在朗读',
+        );
+      }).catch(() => {
+        setState('error');
+        setMessage('浏览器无法继续播放语音。');
+      });
+    }
+  }, []);
 
   useEffect(() => {
     function updateSelection() {
+      if (['loading', 'playing', 'paused'].includes(state)) {
+        setSelection(null);
+        return;
+      }
       window.requestAnimationFrame(() => setSelection(selectionDetails()));
     }
     function keyboardShortcut(event) {
@@ -519,8 +831,18 @@ export default function SelectionTtsReader() {
         const details = selectionDetails();
         if (details) {
           event.preventDefault();
-          speak(details.text);
+          speakSelection(details);
         }
+      }
+      if (
+        event.code === 'Space'
+        && !event.repeat
+        && continuousRef.current
+        && ['loading', 'playing', 'paused'].includes(state)
+        && !isEditableTarget(event.target)
+      ) {
+        event.preventDefault();
+        togglePause();
       }
       if (event.key === 'Escape' && ['loading', 'playing', 'paused'].includes(state)) stop();
     }
@@ -536,10 +858,17 @@ export default function SelectionTtsReader() {
       window.removeEventListener('scroll', updateSelection, true);
       window.removeEventListener('resize', updateSelection);
     };
-  }, [speak, state, stop]);
+  }, [speakSelection, state, stop, togglePause]);
+
+  useEffect(() => {
+    if (pathnameRef.current !== location.pathname) stop();
+    pathnameRef.current = location.pathname;
+  }, [location.pathname, stop]);
 
   useEffect(() => () => {
     abortRef.current?.abort();
+    continuousRef.current = false;
+    progressRef.current = '';
     releaseAudio();
   }, [releaseAudio]);
 
@@ -547,45 +876,39 @@ export default function SelectionTtsReader() {
     speedRef.current = speed;
   }, [speed]);
 
-  function togglePause() {
-    const audioContext = audioContextRef.current;
-    if (!audioContext) return;
-    if (state === 'playing') {
-      audioContext.suspend().then(() => {
-        setState('paused');
-        setMessage('已暂停');
-      });
-    } else {
-      audioContext.resume().then(() => {
-        setState('playing');
-        setMessage('正在朗读');
-      }).catch(() => {
-        setState('error');
-        setMessage('浏览器无法继续播放语音。');
-      });
-    }
-  }
-
   return (
     <>
       {selection ? (
-        <button
-          type="button"
+        <div
           className="booksite-tts-selection"
+          role="toolbar"
+          aria-label="Qwen3-TTS 朗读选项"
           style={{top: selection.top, left: selection.left}}
           onMouseDown={(event) => event.preventDefault()}
           onMouseUp={(event) => event.stopPropagation()}
-          onClick={() => speak(selection.text)}
-          aria-label="使用 Qwen3-TTS 朗读选中文字"
         >
-          <span aria-hidden="true">▶</span> Qwen3 朗读
-        </button>
+          <button
+            type="button"
+            onClick={() => speakSelection(selection)}
+            aria-label="使用 Qwen3-TTS 朗读选中文字"
+          >
+            <span aria-hidden="true">▶</span> Qwen3 朗读选中
+          </button>
+          <button
+            type="button"
+            onClick={() => speakContinuously(selection)}
+            aria-label="从选择位置开始连续朗读"
+          >
+            从此处连续朗读
+          </button>
+        </div>
       ) : null}
       {state !== 'idle' ? (
         <section className={`booksite-tts-player is-${state}`} aria-label="本地语音朗读器">
           <div>
             <strong>Qwen3-TTS</strong>
             <span role="status" aria-live="polite">{message}</span>
+            {continuousRef.current ? <small>空格键：暂停/继续</small> : null}
           </div>
           <label>
             <span className="sr-only">朗读速度</span>
@@ -600,9 +923,9 @@ export default function SelectionTtsReader() {
               <option value="1.5">1.5×</option>
             </select>
           </label>
-          {state === 'playing' || state === 'paused' ? (
+          {state === 'loading' || state === 'playing' || state === 'paused' ? (
             <button type="button" onClick={togglePause}>
-              {state === 'playing' ? '暂停' : '继续'}
+              {state === 'paused' ? '继续' : '暂停'}
             </button>
           ) : null}
           {state === 'loading' || state === 'playing' || state === 'paused' ? (
@@ -1078,22 +1401,36 @@ img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
 .booksite-tts-selection {
   position: fixed;
   z-index: 1000;
-  padding: 0.48rem 0.72rem;
+  display: flex;
+  overflow: hidden;
   border: 1px solid #0e4ed8;
   border-radius: 999px;
   box-shadow: 0 8px 24px rgb(18 24 38 / 22%);
   background: #1463ff;
-  color: #fff;
   font-family: var(--ifm-font-family-base);
-  font-size: 0.78rem;
+}
+.booksite-tts-selection button {
+  padding: 0.5rem 0.72rem;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 0.76rem;
   font-weight: 680;
   line-height: 1;
   cursor: pointer;
 }
-.booksite-tts-selection:hover { background: #0052ef; }
-.booksite-tts-selection:focus-visible {
+.booksite-tts-selection button + button { border-left: 1px solid rgb(255 255 255 / 35%); }
+.booksite-tts-selection button:hover { background: #0052ef; }
+.booksite-tts-selection button:focus-visible {
   outline: 3px solid rgb(20 99 255 / 30%);
-  outline-offset: 3px;
+  outline-offset: -3px;
+}
+::highlight(booksite-tts-current) {
+  background: rgb(255 203 71 / 70%);
+  color: inherit;
+  text-decoration: underline #1463ff 2px;
+  text-underline-offset: 0.16em;
 }
 .booksite-tts-player {
   position: fixed;
@@ -1122,6 +1459,11 @@ img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
   margin-top: 0.16rem;
   color: var(--booksite-muted);
   font-size: 0.76rem;
+}
+.booksite-tts-player > div small {
+  margin-top: 0.2rem;
+  color: var(--booksite-muted);
+  font-size: 0.68rem;
 }
 .booksite-tts-player select,
 .booksite-tts-player button {
@@ -1227,6 +1569,10 @@ def generate_docusaurus_site(book: BookIR, site_dir: str | Path) -> SiteGenerati
     )
     (components_dir / "PdfUrlCallout.js").write_text(
         _pdf_url_callout_js(),
+        encoding="utf-8",
+    )
+    (components_dir / "readingQueue.js").write_text(
+        _reading_queue_js(),
         encoding="utf-8",
     )
     (components_dir / "SelectionTtsReader.js").write_text(

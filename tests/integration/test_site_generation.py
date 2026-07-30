@@ -45,6 +45,7 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert (result.site_dir / "src/pages/quality-report.js").exists()
     assert (result.site_dir / "src/components/PdfCodeBlock.js").exists()
     assert (result.site_dir / "src/components/PdfUrlCallout.js").exists()
+    assert (result.site_dir / "src/components/readingQueue.js").exists()
     assert (result.site_dir / "src/components/SelectionTtsReader.js").exists()
     assert (result.site_dir / "src/theme/MDXComponents.js").exists()
     assert (result.site_dir / "src/theme/Root.js").exists()
@@ -116,7 +117,12 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     guide_text = preview_guide.read_text(encoding="utf-8")
     assert "不要直接双击 build/index.html" in guide_text
     assert "Qwen3-TTS" in guide_text
+    assert "从选择位置连续朗读" in guide_text
+    assert "空格键暂停或继续" in guide_text
     selection_reader = (result.site_dir / "src/components/SelectionTtsReader.js").read_text(
+        encoding="utf-8"
+    )
+    reading_queue = (result.site_dir / "src/components/readingQueue.js").read_text(
         encoding="utf-8"
     )
     assert "Qwen3 朗读" in selection_reader
@@ -130,6 +136,14 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert "response.blob()" not in selection_reader
     assert "秒启动" in selection_reader
     assert "onMouseUp={(event) => event.stopPropagation()}" in selection_reader
+    assert "从此处连续朗读" in selection_reader
+    assert "new Intl.Segmenter" in reading_queue
+    assert "CSS.highlights.set" in reading_queue
+    assert "scrollTo({" in reading_queue
+    assert "event.code === 'Space'" in selection_reader
+    assert "isEditableTarget(event.target)" in selection_reader
+    assert "空格键：暂停/继续" in selection_reader
+    assert "::highlight(booksite-tts-current)" in css
     root_component = (result.site_dir / "src/theme/Root.js").read_text(encoding="utf-8")
     assert "SelectionTtsReader" in root_component
     assert "children" in root_component
