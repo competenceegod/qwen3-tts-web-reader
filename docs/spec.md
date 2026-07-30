@@ -165,6 +165,16 @@ def stable_slug(title: str, source_page: int) -> str:
   model should start audible playback within 2 seconds for a typical
   50–150-character selection; a newly launched server should begin warming the
   model before the first reading request.
+- Continuous reading keeps a bounded amount of synthesized audio scheduled
+  ahead of playback. The next sentence may be generated while the current
+  sentence is still audible, but queued audio is capped so long documents do
+  not grow browser memory without limit.
+- The first audible block uses a short startup buffer, later blocks share one
+  gapless audio timeline, and sentence boundaries use a brief gain crossfade to
+  avoid clicks without delaying the next request until playback finishes.
+- If a selection begins inside an English word, continuous reading moves the
+  start to that word's first character. Selections already at whitespace,
+  punctuation, CJK text, or a word boundary keep their exact start.
 - The local TTS API accepts JSON only, limits request size and selected text,
   serializes inference, and rejects non-loopback clients.
 - Browser verification checks the home document, left sidebar, right TOC,
@@ -233,6 +243,17 @@ def stable_slug(title: str, source_page: int) -> str:
   the current document boundary. Each active queue item has exactly one visible
   highlight, is centered when it starts, and is removed after stop, completion,
   error, unmount, or document navigation.
+- Continuous reading starts with at least 300 ms of scheduled audio and targets
+  at most 10 seconds queued ahead between sentence requests. A sentence already
+  being streamed is always consumed to completion so browser backpressure
+  cannot hold the single-model inference lock. Once one sentence has been
+  synthesized, generation of the next sentence begins before the first
+  sentence finishes playing whenever queue capacity permits.
+- Scheduled PCM blocks from one stream share a continuous Web Audio timeline;
+  adjacent sentences receive a short gain crossfade. A normal warmed 1× reading
+  must not add one model-startup pause after every sentence.
+- Starting a selection in the middle of a Latin word reads that complete word
+  rather than sending a clipped fragment to the TTS model.
 - Space toggles pause and resume only for an active continuous-reading session;
   editable controls retain their native Space behavior.
 - Without a compatible local model or optional MLX runtime, the book remains

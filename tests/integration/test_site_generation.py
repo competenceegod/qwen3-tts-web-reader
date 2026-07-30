@@ -1,3 +1,4 @@
+import base64
 import json
 import stat
 import subprocess
@@ -138,8 +139,18 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert "onMouseUp={(event) => event.stopPropagation()}" in selection_reader
     assert "从此处连续朗读" in selection_reader
     assert "new Intl.Segmenter" in reading_queue
+    assert "snapStartToWordBoundary" in reading_queue
     assert "CSS.highlights.set" in reading_queue
     assert "scrollTo({" in reading_queue
+    assert "const INITIAL_BUFFER_SECONDS = 0.35" in selection_reader
+    assert "const MAX_BUFFER_AHEAD_SECONDS = 10" in selection_reader
+    assert "waitForBufferCapacity" in selection_reader
+    assert "pendingPlaybackRef = useRef(new Set())" in selection_reader
+    assert "linearRampToValueAtTime" in selection_reader
+    assert "gainNode.disconnect()" in selection_reader
+    assert "return {playbackComplete}" in selection_reader
+    assert "const {playbackComplete} = await enqueueStream" in selection_reader
+    assert "playbackPromises.push" in selection_reader
     assert "event.code === 'Space'" in selection_reader
     assert "isEditableTarget(event.target)" in selection_reader
     assert "空格键：暂停/继续" in selection_reader
@@ -152,6 +163,29 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert "/api/tts/stream/" in preview_server_text
     assert "streaming_interval" in preview_server_text
     assert "BOOKSITE_TTS_MODEL" in preview_server_text
+
+    reading_queue_module = base64.b64encode(reading_queue.encode("utf-8")).decode("ascii")
+    word_boundary_check = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "--eval",
+            (
+                f"const module = await import('data:text/javascript;base64,"
+                f"{reading_queue_module}');"
+                "if (module.snapStartToWordBoundary('These applications work.', 10) !== 6) "
+                "throw new Error('mid-word selection was not moved to the word start');"
+                "if (module.snapStartToWordBoundary('These applications work.', 5) !== 5) "
+                "throw new Error('existing word boundary moved unexpectedly');"
+                "if (module.snapStartToWordBoundary('中文朗读。', 2) !== 2) "
+                "throw new Error('CJK selection moved unexpectedly');"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert word_boundary_check.returncode == 0, word_boundary_check.stderr
 
     build_dir = result.site_dir / "build"
     build_dir.mkdir()

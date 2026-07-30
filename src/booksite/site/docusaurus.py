@@ -448,6 +448,39 @@ function trimBounds(text, start, end) {
   return {start, end};
 }
 
+export function snapStartToWordBoundary(text, offset) {
+  const safeOffset = Math.max(0, Math.min(offset, text.length));
+  if (
+    safeOffset === 0
+    || safeOffset === text.length
+    || !/[\\p{Script=Latin}\\p{Number}_'’]/u.test(text[safeOffset - 1])
+    || !/[\\p{Script=Latin}\\p{Number}_'’]/u.test(text[safeOffset])
+  ) {
+    return safeOffset;
+  }
+  if ('Segmenter' in Intl) {
+    const locale = typeof document === 'undefined'
+      ? undefined
+      : document.documentElement.lang || undefined;
+    const segmenter = new Intl.Segmenter(locale, {granularity: 'word'});
+    for (const segment of segmenter.segment(text)) {
+      const end = segment.index + segment.segment.length;
+      if (segment.isWordLike && segment.index < safeOffset && safeOffset < end) {
+        return segment.index;
+      }
+      if (segment.index >= safeOffset) break;
+    }
+  }
+  let start = safeOffset;
+  while (
+    start > 0
+    && /[\\p{Script=Latin}\\p{Number}_'’]/u.test(text[start - 1])
+  ) {
+    start -= 1;
+  }
+  return start;
+}
+
 function safeSizedBounds(text, start, end) {
   const chunks = [];
   let cursor = start;
@@ -511,7 +544,10 @@ export function readingQueueFromSelection(selectionRange) {
   if (!article) return [];
   const {text, segments} = readingDocument(article);
   if (!segments.length) return [];
-  const selectionOffset = selectionStartOffset(selectionRange, segments);
+  const selectionOffset = snapStartToWordBoundary(
+    text,
+    selectionStartOffset(selectionRange, segments),
+  );
   const queue = [];
   for (const sentence of sentenceBounds(text)) {
     if (sentence.end <= selectionOffset) continue;
@@ -557,6 +593,53 @@ import {
   selectionDetails,
 } from './readingQueue';
 
+const SAMPLE_RATE = 24000;
+const INITIAL_BUFFER_SECONDS = 0.35;
+const MAX_BUFFER_AHEAD_SECONDS = 10;
+const BUFFER_CAPACITY_RESERVE_SECONDS = 1;
+const REBUFFER_SECONDS = 0.12;
+const SENTENCE_CROSSFADE_SECONDS = 0.008;
+const START_FADE_SECONDS = 0.006;
+
+function abortError() {
+  return new DOMException('朗读已停止', 'AbortError');
+}
+
+function abortableDelay(milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortError());
+      return;
+    }
+    function onAbort() {
+      window.clearTimeout(timer);
+      reject(abortError());
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener('abort', onAbort, {once: true});
+  });
+}
+
+async function waitForBufferCapacity(audioContext, timeline, signal) {
+  while (
+    timeline.hasAudio
+    && timeline.nextStartTime - audioContext.currentTime
+      > MAX_BUFFER_AHEAD_SECONDS - BUFFER_CAPACITY_RESERVE_SECONDS
+  ) {
+    await abortableDelay(50, signal);
+  }
+}
+
+async function waitUntilAudioTime(audioContext, targetTime, signal) {
+  while (audioContext.currentTime + 0.015 < targetTime) {
+    const remainingMilliseconds = (targetTime - audioContext.currentTime) * 1000;
+    await abortableDelay(Math.min(50, Math.max(10, remainingMilliseconds)), signal);
+  }
+}
+
 export default function SelectionTtsReader() {
   const location = useLocation();
   const [selection, setSelection] = useState(null);
@@ -566,7 +649,7 @@ export default function SelectionTtsReader() {
   const audioContextRef = useRef(null);
   const audioSourcesRef = useRef(new Set());
   const abortRef = useRef(null);
-  const pendingPlaybackRef = useRef(null);
+  const pendingPlaybackRef = useRef(new Set());
   const requestStartedAtRef = useRef(0);
   const playbackIdRef = useRef(0);
   const speedRef = useRef(1);
@@ -576,8 +659,8 @@ export default function SelectionTtsReader() {
 
   const releaseAudio = useCallback(() => {
     playbackIdRef.current += 1;
-    pendingPlaybackRef.current?.resolve();
-    pendingPlaybackRef.current = null;
+    for (const resolve of pendingPlaybackRef.current) resolve();
+    pendingPlaybackRef.current.clear();
     for (const source of audioSourcesRef.current) {
       source.onended = null;
       try {
@@ -603,11 +686,12 @@ export default function SelectionTtsReader() {
     setMessage('已停止');
   }, [releaseAudio]);
 
-  const playStream = useCallback(async (
+  const enqueueStream = useCallback(async (
     text,
     audioContext,
     controller,
     playbackId,
+    timeline,
     onStarted,
   ) => {
     const response = await fetch('/api/tts', {
@@ -634,16 +718,24 @@ export default function SelectionTtsReader() {
 
     const localSources = new Set();
     let resolvePlayback;
+    let playbackResolved = false;
     const playbackComplete = new Promise((resolve) => {
       resolvePlayback = resolve;
     });
-    pendingPlaybackRef.current = {playbackId, resolve: resolvePlayback};
+    function resolvePlaybackOnce() {
+      if (playbackResolved) return;
+      playbackResolved = true;
+      pendingPlaybackRef.current.delete(resolvePlaybackOnce);
+      resolvePlayback();
+    }
+    pendingPlaybackRef.current.add(resolvePlaybackOnce);
     const reader = streamResponse.body.getReader();
     let headerBytesRemaining = 44;
     let leftover = new Uint8Array(0);
-    let nextStartTime = 0;
     let receivedAudio = false;
     let streamFinished = false;
+    let lastSentenceGain = null;
+    let lastSentenceEndTime = 0;
 
     function finishIfReady() {
       if (
@@ -651,10 +743,7 @@ export default function SelectionTtsReader() {
         && localSources.size === 0
         && playbackIdRef.current === playbackId
       ) {
-        if (pendingPlaybackRef.current?.playbackId === playbackId) {
-          pendingPlaybackRef.current = null;
-        }
-        resolvePlayback();
+        resolvePlaybackOnce();
       }
     }
 
@@ -671,28 +760,68 @@ export default function SelectionTtsReader() {
       for (let index = 0; index < samples.length; index += 1) {
         samples[index] = view.getInt16(index * 2, true) / 32768;
       }
-      const buffer = audioContext.createBuffer(1, samples.length, 24000);
+      const buffer = audioContext.createBuffer(1, samples.length, SAMPLE_RATE);
       buffer.copyToChannel(samples, 0);
       const source = audioContext.createBufferSource();
+      const gainNode = audioContext.createGain();
+      const playbackRate = speedRef.current;
       source.buffer = buffer;
-      source.playbackRate.value = speedRef.current;
-      source.connect(audioContext.destination);
-      const startAt = Math.max(
-        audioContext.currentTime + (receivedAudio ? 0 : 0.03),
-        nextStartTime,
-      );
-      nextStartTime = startAt + buffer.duration / speedRef.current;
+      source.playbackRate.value = playbackRate;
+      source.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+
+      const isFirstSentenceBlock = !receivedAudio;
+      let startAt;
+      if (!timeline.hasAudio) {
+        startAt = audioContext.currentTime + INITIAL_BUFFER_SECONDS;
+        gainNode.gain.setValueAtTime(0, startAt);
+        gainNode.gain.linearRampToValueAtTime(
+          1,
+          startAt + Math.min(START_FADE_SECONDS, buffer.duration / playbackRate / 2),
+        );
+      } else if (
+        isFirstSentenceBlock
+        && timeline.nextStartTime
+          > audioContext.currentTime + SENTENCE_CROSSFADE_SECONDS
+      ) {
+        startAt = timeline.nextStartTime - SENTENCE_CROSSFADE_SECONDS;
+        gainNode.gain.setValueAtTime(0, startAt);
+        gainNode.gain.linearRampToValueAtTime(1, timeline.nextStartTime);
+      } else if (timeline.nextStartTime < audioContext.currentTime) {
+        startAt = audioContext.currentTime + REBUFFER_SECONDS;
+        gainNode.gain.setValueAtTime(0, startAt);
+        gainNode.gain.linearRampToValueAtTime(
+          1,
+          startAt + Math.min(START_FADE_SECONDS, buffer.duration / playbackRate / 2),
+        );
+      } else {
+        startAt = timeline.nextStartTime;
+      }
+
+      const endAt = startAt + buffer.duration / playbackRate;
+      timeline.hasAudio = true;
+      timeline.nextStartTime = endAt;
+      lastSentenceGain = gainNode;
+      lastSentenceEndTime = endAt;
       localSources.add(source);
       audioSourcesRef.current.add(source);
       source.onended = () => {
         localSources.delete(source);
         audioSourcesRef.current.delete(source);
+        source.disconnect();
+        gainNode.disconnect();
         finishIfReady();
       };
       source.start(startAt);
-      if (!receivedAudio) {
+      if (isFirstSentenceBlock) {
         receivedAudio = true;
-        onStarted();
+        void waitUntilAudioTime(audioContext, startAt, controller.signal)
+          .then(() => {
+            if (playbackIdRef.current === playbackId) onStarted();
+          })
+          .catch((error) => {
+            if (error.name !== 'AbortError') console.error(error);
+          });
       }
     }
 
@@ -708,12 +837,21 @@ export default function SelectionTtsReader() {
       if (audioBytes.length) schedulePcm(audioBytes);
     }
     if (!receivedAudio) throw new Error('本地语音服务没有返回音频。');
+    if (lastSentenceGain && lastSentenceEndTime > audioContext.currentTime) {
+      const fadeDuration = Math.min(
+        SENTENCE_CROSSFADE_SECONDS,
+        Math.max(0, lastSentenceEndTime - audioContext.currentTime),
+      );
+      const fadeStart = lastSentenceEndTime - fadeDuration;
+      lastSentenceGain.gain.setValueAtTime(1, fadeStart);
+      lastSentenceGain.gain.linearRampToValueAtTime(0, lastSentenceEndTime);
+    }
     streamFinished = true;
     finishIfReady();
-    await playbackComplete;
     if (controller.signal.aborted || playbackIdRef.current !== playbackId) {
-      throw new DOMException('朗读已停止', 'AbortError');
+      throw abortError();
     }
+    return {playbackComplete};
   }, []);
 
   const startReading = useCallback(async (items, continuous) => {
@@ -737,20 +875,22 @@ export default function SelectionTtsReader() {
       const audioContext = new AudioContext();
       audioContextRef.current = audioContext;
       await audioContext.resume();
+      const timeline = {hasAudio: false, nextStartTime: 0};
+      const playbackPromises = [];
       for (let index = 0; index < items.length; index += 1) {
-        if (controller.signal.aborted) throw new DOMException('朗读已停止', 'AbortError');
+        if (controller.signal.aborted) throw abortError();
+        await waitForBufferCapacity(audioContext, timeline, controller.signal);
         const item = items[index];
-        if (continuous && item.range) highlightAndCenter(item.range);
         const progress = continuous ? `第 ${index + 1}/${items.length} 句` : '';
-        progressRef.current = progress;
-        setState(audioContext.state === 'suspended' ? 'paused' : 'loading');
-        setMessage(`正在生成${progress ? ` · ${progress}` : '首段语音'}…`);
-        await playStream(
+        const {playbackComplete} = await enqueueStream(
           item.text,
           audioContext,
           controller,
           playbackId,
+          timeline,
           () => {
+            if (continuous && item.range) highlightAndCenter(item.range);
+            progressRef.current = progress;
             const startupSeconds = (Date.now() - requestStartedAtRef.current) / 1000;
             if (audioContext.state === 'suspended') {
               setState('paused');
@@ -765,7 +905,10 @@ export default function SelectionTtsReader() {
             }
           },
         );
+        playbackPromises.push(playbackComplete);
       }
+      await Promise.all(playbackPromises);
+      if (controller.signal.aborted || playbackIdRef.current !== playbackId) throw abortError();
       continuousRef.current = false;
       progressRef.current = '';
       setState('stopped');
@@ -781,7 +924,7 @@ export default function SelectionTtsReader() {
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
     }
-  }, [playStream, releaseAudio]);
+  }, [enqueueStream, releaseAudio]);
 
   const speakSelection = useCallback((details) => {
     void startReading([{text: details.text, range: null}], false);
