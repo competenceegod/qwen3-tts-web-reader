@@ -21,6 +21,7 @@ from booksite.quality.rules import NativeTextStatus
 _LIST_MARKER = re.compile(
     r"^\s*(?P<marker>[-*•]|\d+[.)])\s+(?P<content>.+)$"
 )
+_LIST_MARKER_ONLY = re.compile(r"^\s*(?P<marker>[-*•]|\d+[.)])\s*$")
 _SHORT_CODE_DELIMITERS = re.compile(r"^[()[\]{},.:;]+$")
 _MONO_HINTS = ("mono", "courier", "code", "consol")
 
@@ -33,13 +34,35 @@ def _line_text(line: dict[str, Any]) -> str:
     return _raw_line_text(line).strip()
 
 
-def _list_markdown_line(text: str) -> str:
-    match = _LIST_MARKER.match(text)
-    if match is None:
-        return _escape_mdx(text)
-    marker = match.group("marker")
+def _markdown_list_item(marker: str, content: str) -> str:
     markdown_marker = "-" if marker in {"-", "*", "•"} else marker
-    return f"{markdown_marker} {_escape_mdx(match.group('content'))}"
+    return f"{markdown_marker} {_escape_mdx(content)}"
+
+
+def _list_markdown(lines: list[str]) -> str | None:
+    items: list[str] = []
+    pending_marker: str | None = None
+    for line in lines:
+        if match := _LIST_MARKER.match(line):
+            if pending_marker is not None:
+                return None
+            items.append(_markdown_list_item(match.group("marker"), match.group("content")))
+            continue
+        if marker_match := _LIST_MARKER_ONLY.match(line):
+            if pending_marker is not None:
+                return None
+            pending_marker = marker_match.group("marker")
+            continue
+        if pending_marker is not None:
+            items.append(_markdown_list_item(pending_marker, line))
+            pending_marker = None
+            continue
+        if not items:
+            return None
+        items[-1] = f"{items[-1]} {_escape_mdx(line)}"
+    if pending_marker is not None or not items:
+        return None
+    return "\n".join(items)
 
 
 def _all_marginal_lines(document: pymupdf.Document, page_count: int) -> list[MarginalLine]:
@@ -100,6 +123,7 @@ def _block_from_pdf(
     code_text = normalize_unicode(
         "\n".join(_raw_line_text(line).rstrip() for line in kept_lines)
     ).strip("\n")
+    list_markdown = _list_markdown(texts)
     normalized = " ".join(text.casefold().split())
     spans = [span for line in kept_lines for span in line.get("spans", [])]
     char_total = sum(len(str(span.get("text", ""))) for span in spans) or 1
@@ -128,9 +152,9 @@ def _block_from_pdf(
         block_type = "title"
         heading_level = 2
         markdown = f"## {_escape_mdx(text)}"
-    elif all(_LIST_MARKER.match(line) for line in texts):
+    elif list_markdown is not None:
         block_type = "list"
-        markdown = "\n".join(_list_markdown_line(line) for line in texts)
+        markdown = list_markdown
     else:
         joined = dehyphenate_line_breaks(text)
         markdown = _escape_mdx(" ".join(joined.splitlines()))

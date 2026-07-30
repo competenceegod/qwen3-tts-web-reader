@@ -8,10 +8,20 @@ def test_pdf_bullet_glyph_is_emitted_as_semantic_markdown() -> None:
         "bbox": (54.0, 300.0, 420.0, 315.0),
         "lines": [
             {
-                "bbox": (54.0, 300.0, 420.0, 315.0),
+                "bbox": (54.0, 300.0, 60.0, 315.0),
                 "spans": [
                     {
-                        "text": "• Track the provenance of generated content",
+                        "text": "•",
+                        "font": "MinionPro-Regular",
+                        "size": 11.0,
+                    }
+                ],
+            },
+            {
+                "bbox": (74.0, 300.0, 420.0, 315.0),
+                "spans": [
+                    {
+                        "text": "Track the provenance of generated content",
                         "font": "MinionPro-Regular",
                         "size": 11.0,
                     }
