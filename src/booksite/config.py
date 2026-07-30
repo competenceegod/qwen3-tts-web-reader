@@ -90,6 +90,22 @@ class PipelineConfig(BaseModel):
     assembly: AssemblyConfig = Field(default_factory=AssemblyConfig)
     site: SiteConfig = Field(default_factory=SiteConfig)
 
+    def unsupported_non_default_options(self) -> list[str]:
+        """Return configured options that this release does not execute."""
+        current = self.model_dump(mode="python")
+        defaults = type(self)().model_dump(mode="python")
+        operational = {
+            "pdf.fallback_render_dpi",
+            *(f"docling.{name}" for name in current["docling"]),
+        }
+        changed: list[str] = []
+        for section, values in current.items():
+            for name, value in values.items():
+                option = f"{section}.{name}"
+                if option not in operational and value != defaults[section][name]:
+                    changed.append(option)
+        return sorted(changed)
+
 
 _ENV_REFERENCE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::-(.*?))?\}")
 

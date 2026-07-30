@@ -39,7 +39,7 @@ def test_pipeline_creates_cached_ir_report_and_site(tmp_path: Path) -> None:
     changed_config = PipelineConfig.model_validate(
         {
             "docling": {"enabled": False},
-            "quality": {"fallback_threshold": 0.8},
+            "pdf": {"fallback_render_dpi": 300},
         }
     )
     changed_result = PipelineRunner(
@@ -49,6 +49,20 @@ def test_pipeline_creates_cached_ir_report_and_site(tmp_path: Path) -> None:
 
     assert changed_result.used_cached_audit is False
     assert changed_result.used_cached_assembly is False
+
+
+def test_runner_rejects_non_default_options_that_are_not_implemented(
+    tmp_path: Path,
+) -> None:
+    config = PipelineConfig.model_validate(
+        {
+            "docling": {"enabled": False},
+            "site": {"base_url": "/books/"},
+        }
+    )
+
+    with pytest.raises(ValueError, match=r"Unsupported non-default options: site\.base_url"):
+        PipelineRunner(config, workspace_root=tmp_path / "workspace")
 
 
 def test_pipeline_keeps_different_pdfs_in_separate_site_directories(tmp_path: Path) -> None:

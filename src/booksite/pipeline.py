@@ -160,6 +160,11 @@ class PipelineRunner:
         config: PipelineConfig,
         workspace_root: str | Path = "workspace",
     ) -> None:
+        unsupported = config.unsupported_non_default_options()
+        if unsupported:
+            raise ValueError(
+                "Unsupported non-default options: " + ", ".join(unsupported)
+            )
         self.config = config
         self.workspace_root = Path(workspace_root)
         self.cache = CacheStore(self.workspace_root / "cache")

@@ -1,18 +1,7 @@
-project:
-  language: auto
-  output_format: docusaurus
-  local_only: true
-
-runtime:
-  max_core_workers: 2
-  render_workers: 4
-  model_workers: 1
-  resume: true
-
+# These are the options executed by the current release. Other typed settings
+# remain reserved for future engines and are rejected when changed from defaults.
 pdf:
-  render_dpi: 200
   fallback_render_dpi: 250
-  unicode_normalization: NFC
 
 docling:
   enabled: true
@@ -22,38 +11,3 @@ docling:
   picture_images: true
   code_enrichment: true
   force_backend_text: true
-
-mineru:
-  enabled: false
-  executable: ".venv-mineru/bin/mineru"
-  backend: pipeline
-  timeout_seconds_per_page: 180
-
-ovisocr2:
-  enabled: false
-  executable: ".venv-ovis/bin/ovisocr2-parse"
-  model_id: "${OVISOCR2_MODEL_ID:-}"
-  quantization: 4bit
-  max_tokens: 8192
-  temperature: 0
-  timeout_seconds_per_page: 180
-
-quality:
-  fallback_threshold: 0.72
-  minimum_text_recall: 0.85
-  maximum_replacement_ratio: 0.005
-  maximum_fragmented_line_ratio: 0.15
-
-assembly:
-  max_words_per_page: 20000
-  max_headings_per_page: 40
-  merge_cross_page_paragraphs: true
-  remove_repeated_headers: true
-  remove_repeated_footers: true
-
-site:
-  title_from_pdf: true
-  toc_min_heading_level: 2
-  toc_max_heading_level: 5
-  base_url: "/"
-  offline_assets: true

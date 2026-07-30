@@ -164,7 +164,7 @@ BOOKSITE_PNPM="$(command -v pnpm)" \
 | 图片引用 / 去重文件 | 15 / 14 |
 | 平均质量分 | 0.952 |
 | 建议人工复核页 | 12 |
-| Python 测试 | 25 通过 |
+| Python 测试 | 全部通过 |
 | Docusaurus build | 通过 |
 | 浏览器控制台错误 | 0 |
 
@@ -175,4 +175,6 @@ BOOKSITE_PNPM="$(command -v pnpm)" \
 - Docling 产物目前用于对照和后续回填，自动合并到 BookIR 仍是后续工作。
 - MinerU/OvisOCR2 适配器已具备超时、JSON 协议和隔离边界，但模型安装与
   块级回填仍是后续工作。
+- 当前可调整且实际生效的配置仅为 `pdf.fallback_render_dpi` 与 `docling.*`；
+  其他预留字段若改成非默认值会明确报错，不会静默忽略。
 - 解析忠实保留原文，不做翻译、改写或事实纠正。
