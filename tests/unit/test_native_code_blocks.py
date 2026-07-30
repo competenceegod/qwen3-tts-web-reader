@@ -35,6 +35,38 @@ def test_short_monospace_delimiters_are_classified_as_code() -> None:
     assert block.markdown == "```text\n      }])]\n```"
 
 
+def test_short_monospace_operator_chain_is_classified_as_code() -> None:
+    raw_block = {
+        "bbox": (85.5, 155.8, 135.0, 167.7),
+        "lines": [
+            {
+                "bbox": (85.5, 155.8, 135.0, 167.7),
+                "spans": [
+                    {
+                        "text": "    } |",
+                        "font": "Consolas",
+                        "size": 9.0,
+                    }
+                ],
+            }
+        ],
+    }
+
+    block = _block_from_pdf(
+        raw_block,
+        page_index=71,
+        order=11,
+        repeated_marginals=set(),
+        toc_titles={},
+        typical_font_size=10.0,
+        page_height=648.0,
+    )
+
+    assert block is not None
+    assert block.type == "code"
+    assert block.markdown == "```text\n    } |\n```"
+
+
 def test_code_blocks_preserve_blank_lines_from_vertical_gap() -> None:
     page = PageIR(
         page_index=0,

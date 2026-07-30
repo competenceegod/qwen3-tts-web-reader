@@ -34,7 +34,7 @@ _LIST_MARKER = re.compile(
     r"^\s*(?P<marker>[-*•]|\d+[.)])\s+(?P<content>.+)$"
 )
 _LIST_MARKER_ONLY = re.compile(r"^\s*(?P<marker>[-*•]|\d+[.)])\s*$")
-_SHORT_CODE_DELIMITERS = re.compile(r"^[()[\]{},.:;]+$")
+_SHORT_CODE_SYNTAX = re.compile(r"^[\s()[\]{},.:;|&+*/%=<>!~^-]+$")
 _MARKDOWN_PUNCTUATION = re.compile(r"([\\`*_[\]()#!|])")
 _MONO_HINTS = ("mono", "courier", "code", "consol")
 _LIST_INDENT_POINTS = 24.0
@@ -290,7 +290,7 @@ def _block_from_pdf(
         heading_level = toc_titles[normalized]
         markdown = f"{'#' * heading_level} {_escape_mdx(text)}"
     elif mono_chars / char_total >= 0.45 and (
-        len(text) >= 8 or _SHORT_CODE_DELIMITERS.fullmatch(text)
+        len(text) >= 8 or _SHORT_CODE_SYNTAX.fullmatch(text)
     ):
         block_type = "code"
         block_text = code_text

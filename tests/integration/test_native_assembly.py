@@ -73,6 +73,7 @@ def test_native_assembly_keeps_short_monospace_delimiters_in_code(tmp_path: Path
     code_lines = [
         "prompt = ChatPromptTemplate.from_messages(",
         '    [{"type": "image_url"},',
+        "    } |",
         "    }])]",
         ")",
         'prompt.invoke({"image_bytes_str": "test-url"})',
@@ -97,6 +98,7 @@ def test_native_assembly_keeps_short_monospace_delimiters_in_code(tmp_path: Path
     )
 
     assert markdown.count('<PdfCodeBlock data="') == 1
+    assert '\n    } |\n' in code_text
     assert "\n    }])]\n)\nprompt.invoke" in code_text
     assert "&#125;" not in code_text
 
