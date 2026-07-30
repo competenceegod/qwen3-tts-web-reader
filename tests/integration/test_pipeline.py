@@ -172,6 +172,20 @@ def test_pipeline_rejects_book_id_collision_using_full_hash_manifest(
     assert manifest["source_sha256"] == hashlib.sha256(first_pdf.read_bytes()).hexdigest()
 
 
+def test_pipeline_rejects_non_object_site_manifest(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "input.pdf"
+    _write_test_pdf(pdf_path, "A Test Book")
+    runner = PipelineRunner(
+        PipelineConfig.model_validate({"docling": {"enabled": False}}),
+        workspace_root=tmp_path / "workspace",
+    )
+    first = runner.run_all(pdf_path, tmp_path / "site", build_site=False)
+    (first.site_dir / ".booksite-site.json").write_text("[]\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Invalid site ownership manifest"):
+        runner.run_all(pdf_path, tmp_path / "site", build_site=False)
+
+
 def test_failed_regeneration_preserves_previous_site(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -62,6 +62,8 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert "type" not in package
     assert "@docusaurus/faster" not in package["dependencies"]
     assert "@easyops-cn/docusaurus-search-local" not in package["dependencies"]
+    assert package["scripts"]["build"] == "docusaurus build && python3 cleanup-build.py"
+    assert (result.site_dir / "cleanup-build.py").exists()
     workspace_config = (result.site_dir / "pnpm-workspace.yaml").read_text(encoding="utf-8")
     assert "autoInstallPeers: false" in workspace_config
     assert "'@swc/core': true" in workspace_config

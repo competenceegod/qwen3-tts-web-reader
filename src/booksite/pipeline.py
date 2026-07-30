@@ -98,6 +98,8 @@ def _validate_existing_site(target: Path, book: BookIR) -> None:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as error:
             raise RuntimeError(f"Invalid site ownership manifest: {manifest_path}") from error
+        if not isinstance(manifest, dict):
+            raise RuntimeError(f"Invalid site ownership manifest: {manifest_path}")
         if (
             manifest.get("book_id") != book.book_id
             or manifest.get("source_sha256") != book.source_sha256

@@ -67,7 +67,7 @@ def _package_json() -> str:
         "private": True,
         "scripts": {
             "start": "docusaurus start",
-            "build": "docusaurus build",
+            "build": "docusaurus build && python3 cleanup-build.py",
             "serve": "docusaurus serve",
             "clear": "docusaurus clear",
         },
@@ -90,6 +90,21 @@ def _package_json() -> str:
         "engines": {"node": ">=20.0"},
     }
     return json.dumps(package, ensure_ascii=False, indent=2) + "\n"
+
+
+def _cleanup_build_py() -> str:
+    return '''#!/usr/bin/env python3
+"""Remove static image copies after Docusaurus emitted hashed equivalents."""
+
+from pathlib import Path
+import shutil
+
+assets_dir = Path(__file__).resolve().parent / "build" / "assets"
+if assets_dir.is_dir():
+    for candidate in assets_dir.iterdir():
+        if candidate.is_dir() and (candidate / ".booksite-generated").is_file():
+            shutil.rmtree(candidate)
+'''
 
 
 def _preview_server_py() -> str:
@@ -580,6 +595,9 @@ def generate_docusaurus_site(book: BookIR, site_dir: str | Path) -> SiteGenerati
         document_paths.append(document_path)
 
     (target / "package.json").write_text(_package_json(), encoding="utf-8")
+    cleanup_build = target / "cleanup-build.py"
+    cleanup_build.write_text(_cleanup_build_py(), encoding="utf-8")
+    cleanup_build.chmod(0o755)
     stale_config = target / "docusaurus.config.js"
     if stale_config.exists():
         stale_config.unlink()

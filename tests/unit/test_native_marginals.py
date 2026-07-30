@@ -32,10 +32,51 @@ def test_marginal_header_is_removed_when_paired_with_page_number() -> None:
         raw_block,
         page_index=72,
         order=0,
-        repeated_marginals=set(),
+        repeated_marginals={"first steps with langchain"},
         toc_titles={},
         typical_font_size=11.0,
         page_height=666.0,
     )
 
     assert block is None
+
+
+def test_unique_marginal_title_is_not_removed_when_paired_with_page_number() -> None:
+    raw_block = {
+        "bbox": (71.4, 35.8, 467.5, 47.7),
+        "lines": [
+            {
+                "bbox": (180.0, 35.8, 360.0, 47.6),
+                "spans": [
+                    {
+                        "text": "Unique chapter title",
+                        "font": "CrimsonPro-Regular",
+                        "size": 12.0,
+                    }
+                ],
+            },
+            {
+                "bbox": (71.4, 35.9, 81.4, 47.7),
+                "spans": [
+                    {
+                        "text": "48",
+                        "font": "CrimsonPro-Regular",
+                        "size": 9.0,
+                    }
+                ],
+            },
+        ],
+    }
+
+    block = _block_from_pdf(
+        raw_block,
+        page_index=72,
+        order=0,
+        repeated_marginals=set(),
+        toc_titles={},
+        typical_font_size=11.0,
+        page_height=666.0,
+    )
+
+    assert block is not None
+    assert block.text == "Unique chapter title"

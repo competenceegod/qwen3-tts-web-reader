@@ -108,19 +108,15 @@ def _block_from_pdf(
     page_height: float,
 ) -> BlockIR | None:
     raw_lines = raw_block.get("lines", [])
-    has_marginal_page_number = any(
-        (float(line["bbox"][1]) / max(page_height, 1) <= 0.1)
-        and normalize_marginal_text(_line_text(line)) == "<page-number>"
-        for line in raw_lines
-    )
     kept_lines: list[dict[str, Any]] = []
     for line in raw_lines:
         text = _line_text(line)
         vertical_ratio = float(line["bbox"][1]) / max(page_height, 1)
         marginal = vertical_ratio <= 0.1 or vertical_ratio >= 0.9
+        normalized_marginal = normalize_marginal_text(text)
         if marginal and (
-            has_marginal_page_number
-            or normalize_marginal_text(text) in repeated_marginals
+            normalized_marginal == "<page-number>"
+            or normalized_marginal in repeated_marginals
         ):
             continue
         kept_lines.append(line)
@@ -437,6 +433,7 @@ def assemble_native_book(pdf_path: str | Path, audit: AuditReport) -> BookIR:
         repeated_marginals = find_repeated_marginal_text(
             _all_marginal_lines(document, audit.page_count),
             page_count=audit.page_count,
+            minimum_ratio=0,
         )
         grouped_toc = _toc_by_page(audit.original_toc)
         pages = [
