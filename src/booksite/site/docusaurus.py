@@ -119,7 +119,7 @@ def main() -> None:
     build_dir = Path(__file__).resolve().parent / "build"
     if not (build_dir / "index.html").is_file():
         raise SystemExit(
-            "未找到 build/index.html。请先运行 PDF 转换，或执行 pnpm --dir site build。"
+            "未找到 build/index.html。请先运行 PDF 转换，或在本书目录执行 pnpm build。"
         )
 
     handler = partial(SimpleHTTPRequestHandler, directory=str(build_dir))

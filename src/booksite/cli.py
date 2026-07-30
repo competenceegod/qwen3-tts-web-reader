@@ -37,7 +37,10 @@ def _echo_result(label: str, path: Path) -> None:
 
 @app.command()
 def doctor(
-    output: Annotated[Path, typer.Option(help="Generated site directory.")] = Path("site"),
+    output: Annotated[
+        Path,
+        typer.Option(help="Collection root for generated per-PDF sites."),
+    ] = Path("site"),
 ) -> None:
     """Check the local core, optional engines, Node runtime, and output path."""
     checks = [
@@ -138,7 +141,10 @@ def generate_site(
     pdf: Path,
     config: Annotated[Path | None, typer.Option()] = None,
     workspace: Annotated[Path, typer.Option()] = Path("workspace"),
-    output: Annotated[Path, typer.Option()] = Path("site"),
+    output: Annotated[
+        Path,
+        typer.Option(help="Collection root for generated per-PDF sites."),
+    ] = Path("site"),
     max_pages: Annotated[int | None, typer.Option(min=1)] = None,
     force_page: Annotated[int | None, typer.Option(min=1)] = None,
 ) -> None:
@@ -151,7 +157,10 @@ def validate(
     pdf: Path,
     config: Annotated[Path | None, typer.Option()] = None,
     workspace: Annotated[Path, typer.Option()] = Path("workspace"),
-    output: Annotated[Path, typer.Option()] = Path("site"),
+    output: Annotated[
+        Path,
+        typer.Option(help="Collection root for generated per-PDF sites."),
+    ] = Path("site"),
     max_pages: Annotated[int | None, typer.Option(min=1)] = None,
 ) -> None:
     """Regenerate content and run the Docusaurus production build."""
@@ -163,7 +172,10 @@ def all_stages(
     pdf: Path,
     config: Annotated[Path | None, typer.Option()] = None,
     workspace: Annotated[Path, typer.Option()] = Path("workspace"),
-    output: Annotated[Path, typer.Option()] = Path("site"),
+    output: Annotated[
+        Path,
+        typer.Option(help="Collection root for generated per-PDF sites."),
+    ] = Path("site"),
     max_pages: Annotated[int | None, typer.Option(min=1)] = None,
     force_page: Annotated[int | None, typer.Option(min=1)] = None,
     no_build: Annotated[

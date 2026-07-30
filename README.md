@@ -42,6 +42,18 @@ uv run booksite all /绝对路径/你的书.pdf \
   --output site
 ```
 
+`--output site` 表示书籍集合根目录。每本 PDF 会自动写入独立的
+`site/<规范化PDF名称>-<内容哈希前8位>/`，例如：
+
+```text
+site/
+├── generative-ai-with-langchain-2e-leonid-kuligin-0f79b523/
+└── another-book-a1b2c3d4/
+```
+
+转换另一份 PDF 不会覆盖、清理或混入已有书籍；重复转换同一份 PDF 只更新它
+自己的稳定目录。命令结束时输出的 `Site:` 路径就是该书的实际目录。
+
 只转换前 100 页：
 
 ```bash
@@ -51,23 +63,23 @@ uv run booksite all /绝对路径/你的书.pdf \
   --max-pages 100
 ```
 
-构建完成后，macOS 可直接双击：
+构建完成后，macOS 可双击该书目录中的启动器：
 
 ```bash
-open site/打开网站.command
+open site/<book-id>/打开网站.command
 ```
 
 它会启动仅监听本机的 HTTP 服务并自动打开浏览器。阅读期间保持终端窗口开启，
-按 `Control-C` 停止。请勿直接双击 `site/build/index.html`：Docusaurus 的
+按 `Control-C` 停止。请勿直接双击该书的 `build/index.html`：Docusaurus 的
 静态资源和页面路由需要通过 HTTP 访问，`file://` 会导致页面加载失败，把
 `baseUrl` 改成本机文件路径也无法正确部署。
 
 也可以使用命令行预览：
 
 ```bash
-python3 site/serve-local.py
+python3 site/<book-id>/serve-local.py
 # 或使用 Docusaurus 自带的预览服务
-pnpm --dir site serve
+pnpm --dir site/<book-id> serve
 ```
 
 浏览器访问命令输出的本地地址。生成站点包括：
@@ -98,10 +110,13 @@ uv run booksite validate book.pdf --output site --max-pages 100
 ## 输出目录
 
 ```text
-site/                       最近一次生成的 Docusaurus 站点
-site/build/                 可部署的静态文件（本地需通过 HTTP 打开）
-site/打开网站.command       macOS 双击预览入口
-site/serve-local.py         无第三方依赖的本地预览服务器
+site/                       全部已生成书籍的集合根目录
+site/<book-id>/             一份 PDF 的独立 Docusaurus 站点
+site/<book-id>/build/       该书可部署的静态文件（本地需通过 HTTP 打开）
+site/<book-id>/打开网站.command
+                            该书的 macOS 双击预览入口
+site/<book-id>/serve-local.py
+                            该书无第三方依赖的本地预览服务器
 workspace/cache/            可恢复的阶段缓存
 workspace/intermediate/     audit.json、BookIR、可选 Docling 产物
 workspace/reports/          summary.json、HTML、CSV、warnings、构建日志
