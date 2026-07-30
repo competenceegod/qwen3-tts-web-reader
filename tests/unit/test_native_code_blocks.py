@@ -30,4 +30,4 @@ def test_short_monospace_delimiters_are_classified_as_code() -> None:
 
     assert block is not None
     assert block.type == "code"
-    assert block.markdown == "```text\n}])]\n```"
+    assert block.markdown == "```text\n      }])]\n```"

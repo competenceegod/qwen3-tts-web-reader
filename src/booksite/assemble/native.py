@@ -18,13 +18,28 @@ from booksite.normalize.headers_footers import (
 from booksite.normalize.text import dehyphenate_line_breaks, normalize_unicode
 from booksite.quality.rules import NativeTextStatus
 
-_LIST_MARKER = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+_LIST_MARKER = re.compile(
+    r"^\s*(?P<marker>[-*•]|\d+[.)])\s+(?P<content>.+)$"
+)
 _SHORT_CODE_DELIMITERS = re.compile(r"^[()[\]{},.:;]+$")
 _MONO_HINTS = ("mono", "courier", "code", "consol")
 
 
+def _raw_line_text(line: dict[str, Any]) -> str:
+    return "".join(str(span.get("text", "")) for span in line.get("spans", []))
+
+
 def _line_text(line: dict[str, Any]) -> str:
-    return "".join(str(span.get("text", "")) for span in line.get("spans", [])).strip()
+    return _raw_line_text(line).strip()
+
+
+def _list_markdown_line(text: str) -> str:
+    match = _LIST_MARKER.match(text)
+    if match is None:
+        return _escape_mdx(text)
+    marker = match.group("marker")
+    markdown_marker = "-" if marker in {"-", "*", "•"} else marker
+    return f"{markdown_marker} {_escape_mdx(match.group('content'))}"
 
 
 def _all_marginal_lines(document: pymupdf.Document, page_count: int) -> list[MarginalLine]:
@@ -82,6 +97,9 @@ def _block_from_pdf(
     if not texts:
         return None
     text = normalize_unicode("\n".join(texts)).strip()
+    code_text = normalize_unicode(
+        "\n".join(_raw_line_text(line).rstrip() for line in kept_lines)
+    ).strip("\n")
     normalized = " ".join(text.casefold().split())
     spans = [span for line in kept_lines for span in line.get("spans", [])]
     char_total = sum(len(str(span.get("text", ""))) for span in spans) or 1
@@ -93,6 +111,7 @@ def _block_from_pdf(
     max_size = max((float(span.get("size", 0)) for span in spans), default=0)
 
     block_type = "paragraph"
+    block_text = text
     heading_level = None
     markdown: str
     if normalized in toc_titles:
@@ -103,14 +122,15 @@ def _block_from_pdf(
         len(text) >= 8 or _SHORT_CODE_DELIMITERS.fullmatch(text)
     ):
         block_type = "code"
-        markdown = f"```text\n{text}\n```"
+        block_text = code_text
+        markdown = f"```text\n{code_text}\n```"
     elif max_size >= max(15, typical_font_size * 1.35):
         block_type = "title"
         heading_level = 2
         markdown = f"## {_escape_mdx(text)}"
     elif all(_LIST_MARKER.match(line) for line in texts):
         block_type = "list"
-        markdown = "\n".join(_escape_mdx(line) for line in texts)
+        markdown = "\n".join(_list_markdown_line(line) for line in texts)
     else:
         joined = dehyphenate_line_breaks(text)
         markdown = _escape_mdx(" ".join(joined.splitlines()))
@@ -122,7 +142,7 @@ def _block_from_pdf(
         order=order,
         type=block_type,
         bbox=bbox,
-        text=text,
+        text=block_text,
         markdown=markdown,
         heading_level=heading_level,
         source_engine="native",
@@ -281,6 +301,9 @@ def _section_markdown(
                     if merged_code is not None:
                         parts[-1] = merged_code
                         continue
+                if block.type == "list" and previous_block_type == "list":
+                    parts[-1] = f"{parts[-1]}\n{block.markdown}"
+                    continue
                 if block.type == "paragraph" and previous_block_type == "paragraph":
                     combined = f"{parts[-1]}\n\n{block.markdown}"
                     dehyphenated = dehyphenate_line_breaks(combined)

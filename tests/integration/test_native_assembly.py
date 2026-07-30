@@ -82,7 +82,7 @@ def test_native_assembly_keeps_short_monospace_delimiters_in_code(tmp_path: Path
 
     assert markdown.count("```text") == 1
     assert markdown.count("```") == 2
-    assert "\n}])]\n)\nprompt.invoke" in markdown
+    assert "\n    }])]\n)\nprompt.invoke" in markdown
     assert "&#125;" not in markdown
 
 
