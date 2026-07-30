@@ -23,7 +23,9 @@ _LIST_MARKER = re.compile(
 )
 _LIST_MARKER_ONLY = re.compile(r"^\s*(?P<marker>[-*•]|\d+[.)])\s*$")
 _SHORT_CODE_DELIMITERS = re.compile(r"^[()[\]{},.:;]+$")
+_MARKDOWN_PUNCTUATION = re.compile(r"([\\`*_[\]()#!|])")
 _MONO_HINTS = ("mono", "courier", "code", "consol")
+_LIST_INDENT_POINTS = 24.0
 
 
 def _raw_line_text(line: dict[str, Any]) -> str:
@@ -86,13 +88,14 @@ def _toc_by_page(entries: list[TocEntry]) -> dict[int, list[TocEntry]]:
 
 
 def _escape_mdx(text: str) -> str:
-    return (
+    html_safe = (
         text.replace("&", "&amp;")
         .replace("{", "&#123;")
         .replace("}", "&#125;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+    return _MARKDOWN_PUNCTUATION.sub(r"\\\1", html_safe)
 
 
 def _block_from_pdf(
@@ -105,12 +108,20 @@ def _block_from_pdf(
     page_height: float,
 ) -> BlockIR | None:
     raw_lines = raw_block.get("lines", [])
+    has_marginal_page_number = any(
+        (float(line["bbox"][1]) / max(page_height, 1) <= 0.1)
+        and normalize_marginal_text(_line_text(line)) == "<page-number>"
+        for line in raw_lines
+    )
     kept_lines: list[dict[str, Any]] = []
     for line in raw_lines:
         text = _line_text(line)
         vertical_ratio = float(line["bbox"][1]) / max(page_height, 1)
         marginal = vertical_ratio <= 0.1 or vertical_ratio >= 0.9
-        if marginal and normalize_marginal_text(text) in repeated_marginals:
+        if marginal and (
+            has_marginal_page_number
+            or normalize_marginal_text(text) in repeated_marginals
+        ):
             continue
         kept_lines.append(line)
     if not kept_lines:
@@ -273,7 +284,11 @@ def _infer_title(audit: AuditReport) -> str:
     return Path(audit.source_pdf).stem.replace("_", " ")
 
 
-def _merge_fenced_code(previous: str, current: str) -> str | None:
+def _merge_fenced_code(
+    previous: str,
+    current: str,
+    preserve_blank_line: bool = False,
+) -> str | None:
     previous_lines = previous.splitlines()
     current_lines = current.splitlines()
     if (
@@ -289,10 +304,33 @@ def _merge_fenced_code(previous: str, current: str) -> str | None:
         [
             previous_lines[0],
             *previous_lines[1:-1],
+            *([""] if preserve_blank_line else []),
             *current_lines[1:-1],
             "```",
         ]
     )
+
+
+def _code_blocks_have_blank_line(previous: BlockIR | None, current: BlockIR) -> bool:
+    if (
+        previous is None
+        or previous.page_index != current.page_index
+        or previous.bbox is None
+        or current.bbox is None
+    ):
+        return False
+    previous_lines = max(1, len((previous.text or "").splitlines()))
+    line_pitch = (previous.bbox[3] - previous.bbox[1]) / previous_lines
+    vertical_gap = current.bbox[1] - previous.bbox[3]
+    return vertical_gap > max(8.0, line_pitch * 0.75)
+
+
+def _indent_list(markdown: str, base_x: float | None, block: BlockIR) -> str:
+    if base_x is None or block.bbox is None:
+        return markdown
+    level = max(0, round((block.bbox[0] - base_x) / _LIST_INDENT_POINTS))
+    prefix = "  " * level
+    return "\n".join(f"{prefix}{line}" if line else line for line in markdown.splitlines())
 
 
 def _section_markdown(
@@ -302,40 +340,85 @@ def _section_markdown(
 ) -> str:
     parts = [f"# {_escape_mdx(section.title)}"]
     previous_block_type: str | None = None
+    previous_block: BlockIR | None = None
+    list_base_x: float | None = None
     source_pages = range(section.start_page, (section.end_page or section.start_page) + 1)
     for page_number in source_pages:
-        for entry in nested_entries.get(page_number, []):
-            if entry.level > section.level:
-                parts.append(f"{'#' * min(entry.level, 6)} {_escape_mdx(entry.title)}")
-                previous_block_type = "title"
         page = pages[page_number - 1]
-        page_entries = nested_entries.get(page_number, [])
-        entry_titles = {" ".join(entry.title.casefold().split()) for entry in page_entries}
+        page_entries = [
+            entry
+            for entry in nested_entries.get(page_number, [])
+            if entry.level > section.level
+        ]
+        entries_by_title = {
+            " ".join(entry.title.casefold().split()): entry for entry in page_entries
+        }
+        block_titles = {
+            " ".join((block.text or "").casefold().split())
+            for block in page.blocks
+            if block.type == "title"
+        }
+        emitted_entry_titles: set[str] = set()
+        for normalized_title, entry in entries_by_title.items():
+            if normalized_title not in block_titles:
+                parts.append(f"{'#' * min(entry.level, 6)} {_escape_mdx(entry.title)}")
+                emitted_entry_titles.add(normalized_title)
+                previous_block_type = "title"
+                previous_block = None
         section_title = " ".join(section.title.casefold().split())
         for block in page.blocks:
             normalized = " ".join((block.text or "").casefold().split())
             partial_section_title = (
                 block.type == "title" and len(normalized) >= 8 and normalized in section_title
             )
-            if normalized == section_title or normalized in entry_titles or partial_section_title:
+            if normalized in entries_by_title:
+                if normalized not in emitted_entry_titles:
+                    entry = entries_by_title[normalized]
+                    parts.append(f"{'#' * min(entry.level, 6)} {_escape_mdx(entry.title)}")
+                    emitted_entry_titles.add(normalized)
+                previous_block_type = "title"
+                previous_block = block
+                list_base_x = None
+                continue
+            if normalized == section_title or partial_section_title:
                 continue
             if block.markdown:
                 if block.type == "code" and previous_block_type == "code":
-                    merged_code = _merge_fenced_code(parts[-1], block.markdown)
+                    merged_code = _merge_fenced_code(
+                        parts[-1],
+                        block.markdown,
+                        preserve_blank_line=_code_blocks_have_blank_line(
+                            previous_block,
+                            block,
+                        ),
+                    )
                     if merged_code is not None:
                         parts[-1] = merged_code
+                        previous_block = block
                         continue
-                if block.type == "list" and previous_block_type == "list":
-                    parts[-1] = f"{parts[-1]}\n{block.markdown}"
+                if block.type == "list":
+                    if previous_block_type != "list":
+                        list_base_x = block.bbox[0] if block.bbox is not None else None
+                    indented = _indent_list(block.markdown, list_base_x, block)
+                    if previous_block_type == "list":
+                        parts[-1] = f"{parts[-1]}\n{indented}"
+                        previous_block = block
+                        continue
+                    parts.append(indented)
+                    previous_block_type = block.type
+                    previous_block = block
                     continue
                 if block.type == "paragraph" and previous_block_type == "paragraph":
                     combined = f"{parts[-1]}\n\n{block.markdown}"
                     dehyphenated = dehyphenate_line_breaks(combined)
                     if dehyphenated != combined:
                         parts[-1] = dehyphenated
+                        previous_block = block
                         continue
                 parts.append(block.markdown)
                 previous_block_type = block.type
+                previous_block = block
+                list_base_x = None
     end_page = section.end_page or section.start_page
     page_label = (
         f"PDF page {section.start_page}"
