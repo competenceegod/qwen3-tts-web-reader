@@ -360,20 +360,27 @@ export default function SelectionTtsReader() {
   const [state, setState] = useState('idle');
   const [message, setMessage] = useState('选择正文文字即可朗读');
   const [speed, setSpeed] = useState(1);
-  const audioRef = useRef(null);
-  const audioUrlRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const audioSourcesRef = useRef(new Set());
   const abortRef = useRef(null);
+  const requestStartedAtRef = useRef(0);
+  const playbackIdRef = useRef(0);
+  const speedRef = useRef(1);
 
   const releaseAudio = useCallback(() => {
-    const audio = audioRef.current;
-    if (audio) {
-      audio.pause();
-      audio.removeAttribute('src');
-      audio.load();
+    playbackIdRef.current += 1;
+    for (const source of audioSourcesRef.current) {
+      source.onended = null;
+      try {
+        source.stop();
+      } catch {
+        // A source that already ended cannot be stopped again.
+      }
     }
-    audioRef.current = null;
-    if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
-    audioUrlRef.current = null;
+    audioSourcesRef.current.clear();
+    const context = audioContextRef.current;
+    audioContextRef.current = null;
+    if (context && context.state !== 'closed') void context.close();
   }, []);
 
   const stop = useCallback(() => {
@@ -389,10 +396,15 @@ export default function SelectionTtsReader() {
     releaseAudio();
     const controller = new AbortController();
     abortRef.current = controller;
+    requestStartedAtRef.current = Date.now();
+    const playbackId = playbackIdRef.current;
     setSelection(null);
     setState('loading');
-    setMessage('正在用 Qwen3-TTS 生成语音…');
+    setMessage('正在生成首段语音…');
     try {
+      const audioContext = new AudioContext();
+      audioContextRef.current = audioContext;
+      await audioContext.resume();
       const response = await fetch('/api/tts', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -403,24 +415,91 @@ export default function SelectionTtsReader() {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || `本地语音服务返回 ${response.status}`);
       }
-      const audioUrl = URL.createObjectURL(await response.blob());
-      audioUrlRef.current = audioUrl;
-      const audio = new Audio(audioUrl);
-      audio.playbackRate = speed;
-      audio.onended = () => {
-        setState('stopped');
-        setMessage('朗读完成');
-        releaseAudio();
-      };
-      audio.onerror = () => {
-        setState('error');
-        setMessage('浏览器无法播放生成的语音。');
-        releaseAudio();
-      };
-      audioRef.current = audio;
-      await audio.play();
-      setState('playing');
-      setMessage('正在朗读');
+      const payload = await response.json();
+      if (
+        typeof payload.streamUrl !== 'string'
+        || !payload.streamUrl.startsWith('/api/tts/stream/')
+      ) {
+        throw new Error('本地语音服务返回了无效的流地址。');
+      }
+      const streamResponse = await fetch(payload.streamUrl, {
+        signal: controller.signal,
+      });
+      if (!streamResponse.ok || !streamResponse.body) {
+        throw new Error(`本地音频流返回 ${streamResponse.status}`);
+      }
+
+      const reader = streamResponse.body.getReader();
+      let headerBytesRemaining = 44;
+      let leftover = new Uint8Array(0);
+      let nextStartTime = 0;
+      let receivedAudio = false;
+      let streamFinished = false;
+
+      function finishIfReady() {
+        if (
+          streamFinished
+          && audioSourcesRef.current.size === 0
+          && playbackIdRef.current === playbackId
+        ) {
+          setState('stopped');
+          setMessage('朗读完成');
+          releaseAudio();
+        }
+      }
+
+      function schedulePcm(pcmBytes) {
+        const combined = new Uint8Array(leftover.length + pcmBytes.length);
+        combined.set(leftover);
+        combined.set(pcmBytes, leftover.length);
+        const usableLength = combined.length - (combined.length % 2);
+        leftover = combined.slice(usableLength);
+        if (!usableLength) return;
+
+        const samples = new Float32Array(usableLength / 2);
+        const view = new DataView(combined.buffer, combined.byteOffset, usableLength);
+        for (let index = 0; index < samples.length; index += 1) {
+          samples[index] = view.getInt16(index * 2, true) / 32768;
+        }
+        const buffer = audioContext.createBuffer(1, samples.length, 24000);
+        buffer.copyToChannel(samples, 0);
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.playbackRate.value = speedRef.current;
+        source.connect(audioContext.destination);
+        const startAt = Math.max(
+          audioContext.currentTime + (receivedAudio ? 0 : 0.03),
+          nextStartTime,
+        );
+        nextStartTime = startAt + buffer.duration / speedRef.current;
+        audioSourcesRef.current.add(source);
+        source.onended = () => {
+          audioSourcesRef.current.delete(source);
+          finishIfReady();
+        };
+        source.start(startAt);
+        if (!receivedAudio) {
+          receivedAudio = true;
+          const startupSeconds = (Date.now() - requestStartedAtRef.current) / 1000;
+          setState('playing');
+          setMessage(`正在流式朗读 · ${startupSeconds.toFixed(1)} 秒启动`);
+        }
+      }
+
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        let audioBytes = value;
+        if (headerBytesRemaining) {
+          const skipped = Math.min(headerBytesRemaining, audioBytes.length);
+          headerBytesRemaining -= skipped;
+          audioBytes = audioBytes.slice(skipped);
+        }
+        if (audioBytes.length) schedulePcm(audioBytes);
+      }
+      if (!receivedAudio) throw new Error('本地语音服务没有返回音频。');
+      streamFinished = true;
+      finishIfReady();
     } catch (error) {
       if (error.name === 'AbortError') return;
       setState('error');
@@ -465,18 +544,19 @@ export default function SelectionTtsReader() {
   }, [releaseAudio]);
 
   useEffect(() => {
-    if (audioRef.current) audioRef.current.playbackRate = speed;
+    speedRef.current = speed;
   }, [speed]);
 
   function togglePause() {
-    const audio = audioRef.current;
-    if (!audio) return;
+    const audioContext = audioContextRef.current;
+    if (!audioContext) return;
     if (state === 'playing') {
-      audio.pause();
-      setState('paused');
-      setMessage('已暂停');
+      audioContext.suspend().then(() => {
+        setState('paused');
+        setMessage('已暂停');
+      });
     } else {
-      audio.play().then(() => {
+      audioContext.resume().then(() => {
         setState('playing');
         setMessage('正在朗读');
       }).catch(() => {

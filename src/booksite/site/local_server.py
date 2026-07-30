@@ -9,12 +9,14 @@ import ipaddress
 import json
 import math
 import os
+import secrets
 import struct
 import sys
 import threading
+import time
 import wave
 import webbrowser
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
@@ -28,6 +30,9 @@ REQUIRED_MODEL_FILES = (
     "speech_tokenizer/config.json",
     "speech_tokenizer/model.safetensors",
 )
+STREAMING_INTERVAL_SECONDS = 0.5
+STREAM_SESSION_TTL_SECONDS = 60
+MAX_STREAM_SESSIONS = 8
 
 
 class RequestError(ValueError):
@@ -126,10 +131,15 @@ def _finite_pcm_sample(value: float) -> int:
     return round(max(-1.0, min(1.0, normalized)) * 32767)
 
 
-def audio_to_wav_bytes(audio: Iterable[float], *, sample_rate: int) -> bytes:
+def audio_to_pcm16_bytes(audio: Iterable[float]) -> bytes:
     pcm = bytearray()
     for value in audio:
         pcm.extend(struct.pack("<h", _finite_pcm_sample(value)))
+    return bytes(pcm)
+
+
+def audio_to_wav_bytes(audio: Iterable[float], *, sample_rate: int) -> bytes:
+    pcm = audio_to_pcm16_bytes(audio)
     output = BytesIO()
     with wave.open(output, "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -137,6 +147,27 @@ def audio_to_wav_bytes(audio: Iterable[float], *, sample_rate: int) -> bytes:
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(pcm)
     return output.getvalue()
+
+
+def wav_stream_header(*, sample_rate: int) -> bytes:
+    """Return a PCM WAV header whose data length is intentionally unknown."""
+
+    return struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        0xFFFFFFFF,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        1,
+        sample_rate,
+        sample_rate * 2,
+        2,
+        16,
+        b"data",
+        0xFFFFFFFF,
+    )
 
 
 def _flatten_audio(values: object) -> Iterable[float]:
@@ -152,6 +183,51 @@ def _flatten_audio(values: object) -> Iterable[float]:
     raise RuntimeError("语音模型返回了无法识别的音频格式。")
 
 
+class TtsSessionStore:
+    """Small one-time store that keeps selected text out of stream URLs."""
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = STREAM_SESSION_TTL_SECONDS,
+        max_sessions: int = MAX_STREAM_SESSIONS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.max_sessions = max_sessions
+        self._clock = clock
+        self._sessions: dict[str, tuple[float, str]] = {}
+        self._lock = threading.Lock()
+
+    def _discard_expired(self, now: float) -> None:
+        expired = [
+            token
+            for token, (created_at, _) in self._sessions.items()
+            if now - created_at > self.ttl_seconds
+        ]
+        for token in expired:
+            self._sessions.pop(token, None)
+
+    def create(self, text: str) -> str:
+        with self._lock:
+            now = self._clock()
+            self._discard_expired(now)
+            while len(self._sessions) >= self.max_sessions:
+                oldest = min(self._sessions, key=lambda token: self._sessions[token][0])
+                self._sessions.pop(oldest)
+            token = secrets.token_urlsafe(24)
+            self._sessions[token] = (now, text)
+            return token
+
+    def consume(self, token: str) -> str:
+        with self._lock:
+            self._discard_expired(self._clock())
+            session = self._sessions.pop(token, None)
+        if session is None:
+            raise RequestError(404, "朗读链接已失效，请重新选择文字。")
+        return session[1]
+
+
 class TtsEngine:
     """Lazy, serialized wrapper around MLX-Audio."""
 
@@ -163,7 +239,11 @@ class TtsEngine:
 
     @property
     def runtime_available(self) -> bool:
-        return importlib.util.find_spec("mlx_audio") is not None
+        return self._model is not None or importlib.util.find_spec("mlx_audio") is not None
+
+    @property
+    def sample_rate(self) -> int:
+        return int(getattr(self._model, "sample_rate", 24_000))
 
     def status(self) -> dict[str, object]:
         runtime = self.runtime_available
@@ -175,37 +255,73 @@ class TtsEngine:
             "referenceVoice": self.reference_audio is not None,
         }
 
+    def require_available(self) -> None:
+        if self.model_path is None and self._model is None:
+            raise RequestError(503, "未找到 PDFgear 下载的兼容 Qwen3-TTS 模型。")
+        if not self.runtime_available:
+            raise RequestError(503, "未安装 MLX 语音运行库，请使用“打开网站.command”启动。")
+
     def _load_model(self) -> object:
         if self._model is None:
-            if self.model_path is None:
-                raise RequestError(503, "未找到 PDFgear 下载的兼容 Qwen3-TTS 模型。")
-            if not self.runtime_available:
-                raise RequestError(503, "未安装 MLX 语音运行库，请使用“打开网站.command”启动。")
+            self.require_available()
             from mlx_audio.tts.utils import load_model
 
+            assert self.model_path is not None
             self._model = load_model(str(self.model_path))
         return self._model
 
-    def synthesize(self, text: str) -> bytes:
+    def _generation_options(self, text: str, *, max_tokens: int | None = None) -> dict[str, object]:
+        options: dict[str, object] = {
+            "lang_code": "auto",
+            "max_tokens": max_tokens or generation_token_limit(text),
+            "verbose": False,
+            "stream": True,
+            "streaming_interval": STREAMING_INTERVAL_SECONDS,
+        }
+        if self.reference_audio:
+            options["ref_audio"] = str(self.reference_audio)
+        return options
+
+    def stream_pcm(self, text: str) -> Iterator[bytes]:
         if not self._lock.acquire(blocking=False):
             raise RequestError(409, "正在生成上一段语音，请稍后再试。")
         try:
             model = self._load_model()
-            options: dict[str, object] = {
-                "lang_code": "auto",
-                "max_tokens": generation_token_limit(text),
-                "verbose": False,
-            }
-            if self.reference_audio:
-                options["ref_audio"] = str(self.reference_audio)
-            samples: list[float] = []
-            sample_rate = int(getattr(model, "sample_rate", 24_000))
-            for result in model.generate(text, **options):
-                samples.extend(_flatten_audio(result.audio))
-                sample_rate = int(getattr(result, "sample_rate", sample_rate))
-            if not samples:
+            emitted = False
+            for result in model.generate(text, **self._generation_options(text)):
+                emitted = True
+                yield audio_to_pcm16_bytes(_flatten_audio(result.audio))
+            if not emitted:
                 raise RuntimeError("语音模型没有返回音频。")
-            return audio_to_wav_bytes(samples, sample_rate=sample_rate)
+        finally:
+            self._lock.release()
+
+    def synthesize(self, text: str) -> bytes:
+        pcm = b"".join(self.stream_pcm(text))
+        output = BytesIO()
+        with wave.open(output, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(self.sample_rate)
+            wav_file.writeframes(pcm)
+        return output.getvalue()
+
+    def warm_up(self) -> bool:
+        if (self.model_path is None and self._model is None) or not self.runtime_available:
+            return False
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            model = self._load_model()
+            for _ in model.generate(
+                "Ready.",
+                **self._generation_options("Ready.", max_tokens=64),
+            ):
+                pass
+            return True
+        except Exception as error:
+            print(f"Qwen3-TTS warm-up error: {error}", file=sys.stderr, flush=True)
+            return False
         finally:
             self._lock.release()
 
@@ -214,7 +330,13 @@ class BooksiteServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def make_handler(build_dir: Path, engine: TtsEngine) -> type[SimpleHTTPRequestHandler]:
+def make_handler(
+    build_dir: Path,
+    engine: TtsEngine,
+    sessions: TtsSessionStore | None = None,
+) -> type[SimpleHTTPRequestHandler]:
+    session_store = sessions or TtsSessionStore()
+
     class BooksiteRequestHandler(SimpleHTTPRequestHandler):
         def __init__(self, *args: object, **kwargs: object) -> None:
             super().__init__(*args, directory=str(build_dir), **kwargs)
@@ -234,14 +356,19 @@ def make_handler(build_dir: Path, engine: TtsEngine) -> type[SimpleHTTPRequestHa
             self.wfile.write(body)
 
         def do_GET(self) -> None:
-            if self.path.partition("?")[0] != "/api/tts/status":
-                super().do_GET()
+            route = self.path.partition("?")[0]
+            if route == "/api/tts/status":
+                try:
+                    self._require_loopback()
+                    self._send_json(200, engine.status())
+                except RequestError as error:
+                    self._send_json(error.status, {"error": str(error)})
                 return
-            try:
-                self._require_loopback()
-                self._send_json(200, engine.status())
-            except RequestError as error:
-                self._send_json(error.status, {"error": str(error)})
+            stream_prefix = "/api/tts/stream/"
+            if route.startswith(stream_prefix):
+                self._stream_tts(route.removeprefix(stream_prefix))
+                return
+            super().do_GET()
 
         def do_POST(self) -> None:
             if self.path.partition("?")[0] != "/api/tts":
@@ -259,14 +386,9 @@ def make_handler(build_dir: Path, engine: TtsEngine) -> type[SimpleHTTPRequestHa
                     raise RequestError(413, "请求内容过大。")
                 body = self.rfile.read(content_length)
                 text = parse_tts_request(body, self.headers.get("Content-Type", ""))
-                wav_bytes = engine.synthesize(text)
-                self.send_response(200)
-                self.send_header("Content-Type", "audio/wav")
-                self.send_header("Content-Length", str(len(wav_bytes)))
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.end_headers()
-                self.wfile.write(wav_bytes)
+                engine.require_available()
+                token = session_store.create(text)
+                self._send_json(201, {"streamUrl": f"/api/tts/stream/{token}"})
             except RequestError as error:
                 self._send_json(error.status, {"error": str(error)})
             except (BrokenPipeError, ConnectionResetError):
@@ -274,6 +396,47 @@ def make_handler(build_dir: Path, engine: TtsEngine) -> type[SimpleHTTPRequestHa
             except Exception as error:
                 print(f"Qwen3-TTS error: {error}", file=sys.stderr, flush=True)
                 self._send_json(500, {"error": "本地语音生成失败，请查看启动窗口中的错误。"})
+
+        def _stream_tts(self, token: str) -> None:
+            chunks: Iterator[bytes] | None = None
+            headers_sent = False
+            try:
+                self._require_loopback()
+                text = session_store.consume(token)
+                chunks = engine.stream_pcm(text)
+                first_chunk = next(chunks)
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                headers_sent = True
+                self.close_connection = True
+                self.wfile.write(wav_stream_header(sample_rate=engine.sample_rate))
+                self.wfile.write(first_chunk)
+                self.wfile.flush()
+                for chunk in chunks:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except StopIteration:
+                if not headers_sent:
+                    self._send_json(500, {"error": "语音模型没有返回音频。"})
+            except RequestError as error:
+                if not headers_sent:
+                    self._send_json(error.status, {"error": str(error)})
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception as error:
+                print(f"Qwen3-TTS stream error: {error}", file=sys.stderr, flush=True)
+                if not headers_sent:
+                    self._send_json(
+                        500,
+                        {"error": "本地语音生成失败，请查看启动窗口中的错误。"},
+                    )
+            finally:
+                if chunks is not None:
+                    chunks.close()
 
     return BooksiteRequestHandler
 
@@ -297,6 +460,9 @@ def main() -> None:
         )
 
     engine = TtsEngine()
+    if engine.status()["available"]:
+        print("正在预热 Qwen3-TTS，本地网站稍后自动打开…", flush=True)
+        engine.warm_up()
     handler = make_handler(build_dir, engine)
     try:
         server = BooksiteServer((args.host, args.port), handler)

@@ -151,6 +151,11 @@ def stable_slug(title: str, source_page: int) -> str:
 - Selecting text inside the book article reveals an accessible “Qwen3 朗读”
   action. The reader provides loading, playing, paused, stopped, and error
   states plus playback-speed control.
+- Qwen3-TTS audio is streamed from the local model into the browser instead of
+  waiting for the complete utterance. On the sample Apple M4 machine, a warmed
+  model should start audible playback within 2 seconds for a typical
+  50–150-character selection; a newly launched server should begin warming the
+  model before the first reading request.
 - The local TTS API accepts JSON only, limits request size and selected text,
   serializes inference, and rejects non-loopback clients.
 - Browser verification checks the home document, left sidebar, right TOC,
@@ -210,6 +215,10 @@ def stable_slug(title: str, source_page: int) -> str:
 - On Apple Silicon with PDFgear’s compatible Qwen3-TTS model installed, the
   launcher can synthesize selected English or Chinese text into playable WAV
   audio without another model download.
+- For a typical 50–150-character selection, the streaming endpoint emits its
+  first playable audio chunk before the whole utterance finishes. Warm
+  click-to-audio latency is at most 2 seconds on the sample Apple M4 machine,
+  and stopping playback closes the stream without waiting for full synthesis.
 - Without a compatible local model or optional MLX runtime, the book remains
   readable and the TTS control reports a useful setup error.
 - Empty, oversized, malformed, non-JSON, concurrent, and non-loopback TTS

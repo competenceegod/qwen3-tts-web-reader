@@ -123,12 +123,20 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert "/api/tts" in selection_reader
     assert "aria-live" in selection_reader
     assert "playbackRate" in selection_reader
+    assert "new AudioContext()" in selection_reader
+    assert "streamResponse.body.getReader()" in selection_reader
+    assert "createBufferSource()" in selection_reader
+    assert "new Audio(" not in selection_reader
+    assert "response.blob()" not in selection_reader
+    assert "秒启动" in selection_reader
     assert "onMouseUp={(event) => event.stopPropagation()}" in selection_reader
     root_component = (result.site_dir / "src/theme/Root.js").read_text(encoding="utf-8")
     assert "SelectionTtsReader" in root_component
     assert "children" in root_component
     preview_server_text = preview_server.read_text(encoding="utf-8")
     assert "/api/tts" in preview_server_text
+    assert "/api/tts/stream/" in preview_server_text
+    assert "streaming_interval" in preview_server_text
     assert "BOOKSITE_TTS_MODEL" in preview_server_text
 
     build_dir = result.site_dir / "build"
