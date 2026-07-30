@@ -145,6 +145,14 @@ def stable_slug(title: str, source_page: int) -> str:
 - Generated sites include a dependency-free local HTTP preview server and a
   macOS double-click launcher. Direct `file://` access to `build/index.html` is
   unsupported because Docusaurus emits site-root asset and route URLs.
+- Generated sites expose an optional, local-only Qwen3-TTS reader through the
+  same loopback HTTP server. The reader discovers a compatible model already
+  downloaded by PDFgear and never uploads selected text or audio.
+- Selecting text inside the book article reveals an accessible “Qwen3 朗读”
+  action. The reader provides loading, playing, paused, stopped, and error
+  states plus playback-speed control.
+- The local TTS API accepts JSON only, limits request size and selected text,
+  serializes inference, and rejects non-loopback clients.
 - Browser verification checks the home document, left sidebar, right TOC,
   multiple generated pages, source-page labels, desktop layout, and mobile
   overflow.
@@ -159,11 +167,14 @@ def stable_slug(title: str, source_page: int) -> str:
 - Record page provenance and automatic transformations.
 - Reuse cached stages unless invalidated.
 - Keep external engines behind a common adapter protocol and timeout.
+- Keep TTS inference on the local Apple Silicon device and reuse an existing
+  PDFgear model snapshot when present.
 
 ### Ask first
 
 - Uploading any source material to a remote service.
 - Installing or downloading multi-gigabyte OCR/model weights.
+- Switching the TTS reader to a cloud API or downloading a second model copy.
 - Replacing the sample book's text with rewritten or translated content.
 
 ### Never
@@ -172,6 +183,8 @@ def stable_slug(title: str, source_page: int) -> str:
 - Run whole-book OCR by default.
 - Allow one failed page to delete previously completed work.
 - Commit PDFs, generated book content, caches, model files, or secrets.
+- Send selected book text, reference audio, or synthesized speech off-device.
+- Expose the local TTS endpoint to non-loopback clients by default.
 
 ## Success criteria
 
@@ -194,6 +207,13 @@ def stable_slug(title: str, source_page: int) -> str:
 - The production Docusaurus build succeeds.
 - A generated production build can be opened through the bundled local preview
   launcher without changing `baseUrl` to a machine-specific file path.
+- On Apple Silicon with PDFgear’s compatible Qwen3-TTS model installed, the
+  launcher can synthesize selected English or Chinese text into playable WAV
+  audio without another model download.
+- Without a compatible local model or optional MLX runtime, the book remains
+  readable and the TTS control reports a useful setup error.
+- Empty, oversized, malformed, non-JSON, concurrent, and non-loopback TTS
+  requests are rejected without invoking the model.
 - Every processed PDF page has a PageIR record, including empty-text pages.
 - All in-range PDF bookmarks appear in the resolved table of contents.
 - Stable slugs do not change across identical runs.

@@ -83,7 +83,8 @@ open site/<book-id>/打开网站.command
 也可以使用命令行预览：
 
 ```bash
-python3 site/<book-id>/serve-local.py
+uv run --no-project --python 3.12 --with 'mlx-audio==0.4.5' \
+  python site/<book-id>/serve-local.py
 # 或使用 Docusaurus 自带的预览服务
 pnpm --dir site/<book-id> serve
 ```
@@ -97,7 +98,14 @@ pnpm --dir site/<book-id> serve
 - 图片抽取和无文本页面的渲染回退
 - PDF 原始页码溯源
 - `/quality-report` 页面及 JSON、CSV、HTML 报告
+- 选中文字后的本地 Qwen3-TTS 朗读、暂停/继续/停止和 0.75–1.5× 调速
 - 深色模式和移动端侧栏
+
+朗读功能会自动发现并复用 PDFgear 已下载的
+`mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit`，不会复制或再次下载约
+1.9 GB 的模型。首次使用可能由 `uv` 安装约 100 MB 的 MLX 运行库。选中文字、
+参考音色和生成音频都只在本机处理；服务仅允许绑定和访问回环地址。没有模型、
+MLX 运行库或 `uv` 时，网站仍可正常阅读，并会显示可操作的朗读错误提示。
 
 ## 分阶段运行
 

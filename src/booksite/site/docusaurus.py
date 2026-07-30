@@ -285,63 +285,7 @@ export default {
 
 
 def _preview_server_py() -> str:
-    return '''#!/usr/bin/env python3
-"""Serve the generated Docusaurus build over loopback HTTP."""
-
-from __future__ import annotations
-
-import argparse
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-import threading
-import webbrowser
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Preview the generated book site.")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", default=8000, type=int)
-    parser.add_argument("--no-open", action="store_true")
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    build_dir = Path(__file__).resolve().parent / "build"
-    if not (build_dir / "index.html").is_file():
-        raise SystemExit(
-            "未找到 build/index.html。请先运行 PDF 转换，或在本书目录执行 pnpm build。"
-        )
-
-    handler = partial(SimpleHTTPRequestHandler, directory=str(build_dir))
-    try:
-        server = ThreadingHTTPServer((args.host, args.port), handler)
-    except OSError as error:
-        raise SystemExit(
-            f"无法启动本地网站：{error}。可尝试 python3 serve-local.py --port 8001"
-        ) from error
-
-    display_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
-    url = f"http://{display_host}:{server.server_port}/"
-    print(f"本地网站：{url}", flush=True)
-    print("保持此窗口开启；按 Control-C 停止。", flush=True)
-    if not args.no_open:
-        opener = threading.Timer(0.2, webbrowser.open, args=(url,))
-        opener.daemon = True
-        opener.start()
-
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\\n本地网站已停止。")
-    finally:
-        server.server_close()
-
-
-if __name__ == "__main__":
-    main()
-'''
+    return Path(__file__).with_name("local_server.py").read_text(encoding="utf-8")
 
 
 def _preview_launcher_sh() -> str:
@@ -349,6 +293,12 @@ def _preview_launcher_sh() -> str:
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --no-project --python 3.12 --with 'mlx-audio==0.4.5' \
+    python "$SCRIPT_DIR/serve-local.py"
+fi
+
+echo "提示：未找到 uv，将仅启动网站；Qwen3-TTS 朗读暂不可用。" >&2
 exec /usr/bin/env python3 "$SCRIPT_DIR/serve-local.py"
 """
 
@@ -365,13 +315,247 @@ macOS：
 2. 默认浏览器会自动打开本地网站。
 3. 阅读期间保持终端窗口开启；按 Control-C 停止。
 
+Qwen3-TTS 朗读：
+1. 启动脚本会复用 PDFgear 已下载的 Qwen3-TTS 模型，不会再复制模型。
+2. 第一次启动可能需要通过 uv 安装约 100 MB 的 MLX 运行库。
+3. 在正文中选择文字，点击“Qwen3 朗读”；可暂停、继续、停止和调速。
+4. 文字和语音只在本机处理，本地接口只接受 127.0.0.1/::1 请求。
+5. 若未安装 uv，网站仍可正常阅读，但朗读功能不可用。
+
 命令行：
-python3 serve-local.py
+uv run --no-project --python 3.12 --with 'mlx-audio==0.4.5' python serve-local.py
 
 开发者也可以运行：
 pnpm serve
 
 部署时请上传 build/ 目录中的全部内容，不要把 baseUrl 改成本机文件路径。
+"""
+
+
+def _selection_tts_reader_js() -> str:
+    return """import React, {useCallback, useEffect, useRef, useState} from 'react';
+
+const MAX_TEXT_CHARACTERS = 2000;
+
+function selectionDetails() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+  const text = selection.toString().replace(/\\s+/gu, ' ').trim();
+  if (!text || text.length > MAX_TEXT_CHARACTERS) return null;
+  const range = selection.getRangeAt(0);
+  const node = range.commonAncestorContainer;
+  const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  if (!element?.closest('.theme-doc-markdown')) return null;
+  const rect = range.getBoundingClientRect();
+  if (!rect.width && !rect.height) return null;
+  return {
+    text,
+    top: Math.max(12, rect.top - 46),
+    left: Math.min(window.innerWidth - 132, Math.max(12, rect.left + rect.width / 2 - 58)),
+  };
+}
+
+export default function SelectionTtsReader() {
+  const [selection, setSelection] = useState(null);
+  const [state, setState] = useState('idle');
+  const [message, setMessage] = useState('选择正文文字即可朗读');
+  const [speed, setSpeed] = useState(1);
+  const audioRef = useRef(null);
+  const audioUrlRef = useRef(null);
+  const abortRef = useRef(null);
+
+  const releaseAudio = useCallback(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+    }
+    audioRef.current = null;
+    if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+    audioUrlRef.current = null;
+  }, []);
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    releaseAudio();
+    setState('stopped');
+    setMessage('已停止');
+  }, [releaseAudio]);
+
+  const speak = useCallback(async (text) => {
+    abortRef.current?.abort();
+    releaseAudio();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setSelection(null);
+    setState('loading');
+    setMessage('正在用 Qwen3-TTS 生成语音…');
+    try {
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text}),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `本地语音服务返回 ${response.status}`);
+      }
+      const audioUrl = URL.createObjectURL(await response.blob());
+      audioUrlRef.current = audioUrl;
+      const audio = new Audio(audioUrl);
+      audio.playbackRate = speed;
+      audio.onended = () => {
+        setState('stopped');
+        setMessage('朗读完成');
+        releaseAudio();
+      };
+      audio.onerror = () => {
+        setState('error');
+        setMessage('浏览器无法播放生成的语音。');
+        releaseAudio();
+      };
+      audioRef.current = audio;
+      await audio.play();
+      setState('playing');
+      setMessage('正在朗读');
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+      setState('error');
+      setMessage(error.message || '本地语音生成失败。');
+      releaseAudio();
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+    }
+  }, [releaseAudio, speed]);
+
+  useEffect(() => {
+    function updateSelection() {
+      window.requestAnimationFrame(() => setSelection(selectionDetails()));
+    }
+    function keyboardShortcut(event) {
+      if (event.altKey && event.key.toLocaleLowerCase() === 'r') {
+        const details = selectionDetails();
+        if (details) {
+          event.preventDefault();
+          speak(details.text);
+        }
+      }
+      if (event.key === 'Escape' && ['loading', 'playing', 'paused'].includes(state)) stop();
+    }
+    document.addEventListener('mouseup', updateSelection);
+    document.addEventListener('keyup', updateSelection);
+    document.addEventListener('keydown', keyboardShortcut);
+    window.addEventListener('scroll', updateSelection, true);
+    window.addEventListener('resize', updateSelection);
+    return () => {
+      document.removeEventListener('mouseup', updateSelection);
+      document.removeEventListener('keyup', updateSelection);
+      document.removeEventListener('keydown', keyboardShortcut);
+      window.removeEventListener('scroll', updateSelection, true);
+      window.removeEventListener('resize', updateSelection);
+    };
+  }, [speak, state, stop]);
+
+  useEffect(() => () => {
+    abortRef.current?.abort();
+    releaseAudio();
+  }, [releaseAudio]);
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.playbackRate = speed;
+  }, [speed]);
+
+  function togglePause() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (state === 'playing') {
+      audio.pause();
+      setState('paused');
+      setMessage('已暂停');
+    } else {
+      audio.play().then(() => {
+        setState('playing');
+        setMessage('正在朗读');
+      }).catch(() => {
+        setState('error');
+        setMessage('浏览器无法继续播放语音。');
+      });
+    }
+  }
+
+  return (
+    <>
+      {selection ? (
+        <button
+          type="button"
+          className="booksite-tts-selection"
+          style={{top: selection.top, left: selection.left}}
+          onMouseDown={(event) => event.preventDefault()}
+          onMouseUp={(event) => event.stopPropagation()}
+          onClick={() => speak(selection.text)}
+          aria-label="使用 Qwen3-TTS 朗读选中文字"
+        >
+          <span aria-hidden="true">▶</span> Qwen3 朗读
+        </button>
+      ) : null}
+      {state !== 'idle' ? (
+        <section className={`booksite-tts-player is-${state}`} aria-label="本地语音朗读器">
+          <div>
+            <strong>Qwen3-TTS</strong>
+            <span role="status" aria-live="polite">{message}</span>
+          </div>
+          <label>
+            <span className="sr-only">朗读速度</span>
+            <select
+              value={speed}
+              onChange={(event) => setSpeed(Number(event.target.value))}
+              aria-label="朗读速度"
+            >
+              <option value="0.75">0.75×</option>
+              <option value="1">1×</option>
+              <option value="1.25">1.25×</option>
+              <option value="1.5">1.5×</option>
+            </select>
+          </label>
+          {state === 'playing' || state === 'paused' ? (
+            <button type="button" onClick={togglePause}>
+              {state === 'playing' ? '暂停' : '继续'}
+            </button>
+          ) : null}
+          {state === 'loading' || state === 'playing' || state === 'paused' ? (
+            <button type="button" onClick={stop}>停止</button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setState('idle')}
+              aria-label="关闭朗读器"
+            >
+              关闭
+            </button>
+          )}
+        </section>
+      ) : null}
+    </>
+  );
+}
+"""
+
+
+def _root_js() -> str:
+    return """import React from 'react';
+import SelectionTtsReader from '@site/src/components/SelectionTtsReader';
+
+export default function Root({children}) {
+  return (
+    <>
+      {children}
+      <SelectionTtsReader />
+    </>
+  );
+}
 """
 
 
@@ -811,6 +995,72 @@ img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
 .booksite-metrics strong { display: block; font-size: 1.5rem; }
 .booksite-metrics span { color: var(--booksite-muted); }
 
+.booksite-tts-selection {
+  position: fixed;
+  z-index: 1000;
+  padding: 0.48rem 0.72rem;
+  border: 1px solid #0e4ed8;
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgb(18 24 38 / 22%);
+  background: #1463ff;
+  color: #fff;
+  font-family: var(--ifm-font-family-base);
+  font-size: 0.78rem;
+  font-weight: 680;
+  line-height: 1;
+  cursor: pointer;
+}
+.booksite-tts-selection:hover { background: #0052ef; }
+.booksite-tts-selection:focus-visible {
+  outline: 3px solid rgb(20 99 255 / 30%);
+  outline-offset: 3px;
+}
+.booksite-tts-player {
+  position: fixed;
+  z-index: 999;
+  right: 22px;
+  bottom: 22px;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  max-width: min(620px, calc(100vw - 32px));
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--booksite-border);
+  border-left: 4px solid #1463ff;
+  border-radius: 8px;
+  box-shadow: 0 12px 36px rgb(18 24 38 / 18%);
+  background: var(--ifm-background-color);
+  color: var(--ifm-font-color-base);
+  font-family: var(--ifm-font-family-base);
+}
+.booksite-tts-player > div {
+  display: grid;
+  min-width: 11rem;
+  line-height: 1.25;
+}
+.booksite-tts-player > div span {
+  margin-top: 0.16rem;
+  color: var(--booksite-muted);
+  font-size: 0.76rem;
+}
+.booksite-tts-player select,
+.booksite-tts-player button {
+  min-height: 2rem;
+  padding: 0.32rem 0.55rem;
+  border: 1px solid var(--booksite-border);
+  border-radius: 5px;
+  background: var(--ifm-background-color);
+  color: var(--ifm-font-color-base);
+  font-family: var(--ifm-font-family-base);
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1;
+}
+.booksite-tts-player button { cursor: pointer; }
+.booksite-tts-player button:hover { border-color: #1463ff; color: #1463ff; }
+.booksite-tts-player.is-loading { border-left-color: #d48a00; }
+.booksite-tts-player.is-error { border-left-color: #c83232; }
+
 @media (max-width: 996px) {
   .theme-doc-markdown {
     padding-left: 0;
@@ -821,6 +1071,14 @@ img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
   .booksite-search-link { min-width: auto; border: 0; }
   .booksite-book-title { max-width: none; border-left: 0; }
   .booksite-pdf-code button { opacity: 1; }
+  .booksite-tts-player {
+    right: 16px;
+    bottom: 16px;
+    left: 16px;
+    flex-wrap: wrap;
+    max-width: none;
+  }
+  .booksite-tts-player > div { flex: 1 1 100%; }
 }
 """
 
@@ -891,8 +1149,16 @@ def generate_docusaurus_site(book: BookIR, site_dir: str | Path) -> SiteGenerati
         _pdf_url_callout_js(),
         encoding="utf-8",
     )
+    (components_dir / "SelectionTtsReader.js").write_text(
+        _selection_tts_reader_js(),
+        encoding="utf-8",
+    )
     (theme_dir / "MDXComponents.js").write_text(
         _mdx_components_js(),
+        encoding="utf-8",
+    )
+    (theme_dir / "Root.js").write_text(
+        _root_js(),
         encoding="utf-8",
     )
     (static_dir / "search-index.json").write_text(

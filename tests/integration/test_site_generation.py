@@ -3,7 +3,8 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from booksite.models.book_ir import BookIR, SectionIR
 from booksite.site.docusaurus import generate_docusaurus_site
@@ -44,7 +45,9 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert (result.site_dir / "src/pages/quality-report.js").exists()
     assert (result.site_dir / "src/components/PdfCodeBlock.js").exists()
     assert (result.site_dir / "src/components/PdfUrlCallout.js").exists()
+    assert (result.site_dir / "src/components/SelectionTtsReader.js").exists()
     assert (result.site_dir / "src/theme/MDXComponents.js").exists()
+    assert (result.site_dir / "src/theme/Root.js").exists()
     assert (result.site_dir / "static/favicon.svg").exists()
     config = (result.site_dir / "docusaurus.config.mjs").read_text(encoding="utf-8")
     assert "favicon: 'favicon.svg'" in config
@@ -106,8 +109,27 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert preview_server.exists()
     assert preview_launcher.exists()
     assert preview_launcher.stat().st_mode & stat.S_IXUSR
-    assert "serve-local.py" in preview_launcher.read_text(encoding="utf-8")
-    assert "不要直接双击 build/index.html" in preview_guide.read_text(encoding="utf-8")
+    launcher_text = preview_launcher.read_text(encoding="utf-8")
+    assert "serve-local.py" in launcher_text
+    assert "mlx-audio==0.4.5" in launcher_text
+    assert "uv run --no-project" in launcher_text
+    guide_text = preview_guide.read_text(encoding="utf-8")
+    assert "不要直接双击 build/index.html" in guide_text
+    assert "Qwen3-TTS" in guide_text
+    selection_reader = (result.site_dir / "src/components/SelectionTtsReader.js").read_text(
+        encoding="utf-8"
+    )
+    assert "Qwen3 朗读" in selection_reader
+    assert "/api/tts" in selection_reader
+    assert "aria-live" in selection_reader
+    assert "playbackRate" in selection_reader
+    assert "onMouseUp={(event) => event.stopPropagation()}" in selection_reader
+    root_component = (result.site_dir / "src/theme/Root.js").read_text(encoding="utf-8")
+    assert "SelectionTtsReader" in root_component
+    assert "children" in root_component
+    preview_server_text = preview_server.read_text(encoding="utf-8")
+    assert "/api/tts" in preview_server_text
+    assert "BOOKSITE_TTS_MODEL" in preview_server_text
 
     build_dir = result.site_dir / "build"
     build_dir.mkdir()
@@ -137,6 +159,22 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
         with urlopen(preview_url, timeout=3) as response:
             assert response.status == 200
             assert b"Local preview works" in response.read()
+        with urlopen(f"{preview_url}api/tts/status", timeout=3) as response:
+            status = json.load(response)
+            assert set(status) >= {"available", "model", "runtime"}
+        invalid_request = Request(
+            f"{preview_url}api/tts",
+            data=b"not-json",
+            headers={"Content-Type": "text/plain"},
+            method="POST",
+        )
+        try:
+            urlopen(invalid_request, timeout=3)
+        except HTTPError as error:
+            assert error.code == 415
+            assert json.load(error)["error"]
+        else:
+            raise AssertionError("non-JSON TTS request unexpectedly succeeded")
     finally:
         process.terminate()
         process.wait(timeout=3)
