@@ -29,8 +29,8 @@ BlockType = Literal[
 class CodeSpanIR(BaseModel):
     text: str
     color: str = Field(pattern=r"^#[0-9a-f]{6}$")
-    font_family: str = "monospace"
-    font_size_pt: float = Field(gt=0)
+    font_family: str = Field(default="monospace", min_length=1, max_length=256)
+    font_size_pt: float = Field(gt=0, le=256, allow_inf_nan=False)
     bold: bool = False
     italic: bool = False
 
@@ -42,7 +42,7 @@ class CodeLineIR(BaseModel):
 class CodeStyleIR(BaseModel):
     background_color: str = Field(pattern=r"^#[0-9a-f]{6}$")
     border_color: str = Field(pattern=r"^#[0-9a-f]{6}$")
-    font_size_pt: float = Field(gt=0)
+    font_size_pt: float = Field(gt=0, le=256, allow_inf_nan=False)
 
 
 class BlockIR(BaseModel):

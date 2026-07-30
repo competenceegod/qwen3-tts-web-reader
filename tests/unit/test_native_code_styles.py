@@ -1,8 +1,12 @@
 import base64
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from booksite.assemble.native import (
     _block_from_pdf,
+    _bounded_float,
     _code_style_for_bbox,
     _section_markdown,
 )
@@ -23,6 +27,13 @@ def test_code_block_preserves_pdf_span_styles() -> None:
             {
                 "bbox": (85.5, 100.0, 300.0, 112.0),
                 "spans": [
+                    {
+                        "text": "class ",
+                        "font": "Consolas-Bold",
+                        "size": 9.0,
+                        "flags": 16,
+                        "color": 0xA626A4,
+                    },
                     {
                         "text": "from ",
                         "font": "Consolas",
@@ -69,6 +80,13 @@ def test_code_block_preserves_pdf_span_styles() -> None:
     assert block.code_style == style
     assert block.code_lines[0].spans == [
         CodeSpanIR(
+            text="class ",
+            color="#a626a4",
+            font_family="Consolas-Bold",
+            font_size_pt=9.0,
+            bold=True,
+        ),
+        CodeSpanIR(
             text="from ",
             color="#a626a4",
             font_family="Consolas",
@@ -88,6 +106,73 @@ def test_code_block_preserves_pdf_span_styles() -> None:
             italic=True,
         ),
     ]
+
+
+@pytest.mark.parametrize("font_size", [float("inf"), 1e100])
+def test_code_style_models_reject_non_renderable_font_sizes(font_size: float) -> None:
+    with pytest.raises(ValidationError):
+        CodeSpanIR(
+            text="unsafe",
+            color="#000000",
+            font_family="Consolas",
+            font_size_pt=font_size,
+        )
+
+    with pytest.raises(ValidationError):
+        CodeStyleIR(
+            background_color="#ffffff",
+            border_color="#000000",
+            font_size_pt=font_size,
+        )
+
+
+def test_code_span_model_rejects_unbounded_font_family() -> None:
+    with pytest.raises(ValidationError):
+        CodeSpanIR(
+            text="unsafe",
+            color="#000000",
+            font_family="x" * 257,
+            font_size_pt=9.0,
+        )
+
+
+def test_pdf_numeric_sanitizer_handles_integer_overflow() -> None:
+    assert _bounded_float(10**10000, 9.0) == 9.0
+
+
+def test_pdf_code_span_values_are_safely_bounded() -> None:
+    raw_block = {
+        "bbox": (85.5, 100.0, 300.0, 112.0),
+        "lines": [
+            {
+                "bbox": (85.5, 100.0, 300.0, 112.0),
+                "spans": [
+                    {
+                        "text": "safe_value",
+                        "font": "Consolas" + ("A" * 300),
+                        "size": float("inf"),
+                        "flags": "not-an-int",
+                        "color": float("inf"),
+                    }
+                ],
+            }
+        ],
+    }
+
+    block = _block_from_pdf(
+        raw_block,
+        page_index=0,
+        order=0,
+        repeated_marginals=set(),
+        toc_titles={},
+        typical_font_size=11.0,
+        page_height=666.0,
+    )
+
+    assert block is not None
+    assert block.code_lines[0].spans[0].font_size_pt == 9.0
+    assert len(block.code_lines[0].spans[0].font_family) == 256
+    assert block.code_lines[0].spans[0].color == "#000000"
 
 
 def test_code_surface_uses_containing_pdf_fill_and_accent_rule() -> None:

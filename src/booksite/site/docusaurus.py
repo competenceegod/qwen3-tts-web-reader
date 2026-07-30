@@ -161,7 +161,7 @@ export default function PdfCodeBlock({data}) {
   const code = useMemo(() => JSON.parse(atob(data)), [data]);
   const plainText = useMemo(
     () => code.lines
-      .map((line) => line.map((span) => span.text).join(''))
+      .map((line) => line.map((span) => span.text).join('').replace(/[ \\t]+$/u, ''))
       .join('\\n'),
     [code],
   );
@@ -185,7 +185,12 @@ export default function PdfCodeBlock({data}) {
         '--pdf-code-font-size': `${code.fontSizePt}pt`,
       }}
     >
-      <button type="button" aria-label="Copy code" onClick={copyCode}>
+      <button
+        type="button"
+        aria-label={copied ? 'Code copied' : 'Copy code'}
+        aria-live="polite"
+        onClick={copyCode}
+      >
         {copied ? 'Copied' : 'Copy'}
       </button>
       <pre tabIndex={0}>
@@ -642,11 +647,11 @@ pre { border: 1px solid var(--booksite-border); border-radius: 6px; box-shadow: 
   top: 0.45rem;
   right: 0.55rem;
   padding: 0.25rem 0.5rem;
-  border: 1px solid color-mix(in srgb, var(--pdf-code-border) 70%, #0000);
+  border: 1px solid rgb(18 24 38 / 22%);
   border-radius: 4px;
   opacity: 0;
-  background: color-mix(in srgb, var(--pdf-code-background) 88%, #ffffff);
-  color: #384152;
+  background: rgb(255 255 255 / 92%);
+  color: #121826;
   font-family: var(--ifm-font-family-base);
   font-size: 0.7rem;
   cursor: pointer;

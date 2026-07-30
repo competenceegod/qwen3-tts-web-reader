@@ -57,12 +57,16 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert ".booksite-pdf-code" in css
     assert 'font-family: Consolas, "SFMono-Regular", Menlo, monospace' in css
     assert "overflow-x: auto" in css
+    assert "background: rgb(255 255 255 / 92%)" in css
+    assert "color: #121826" in css
     code_component = (
         result.site_dir / "src/components/PdfCodeBlock.js"
     ).read_text(encoding="utf-8")
     assert "JSON.parse(atob(data))" in code_component
-    assert 'aria-label="Copy code"' in code_component
+    assert "aria-label={copied ? 'Code copied' : 'Copy code'}" in code_component
+    assert 'aria-live="polite"' in code_component
     assert "navigator.clipboard.writeText" in code_component
+    assert ".replace(/[ \\t]+$/u, '')" in code_component
     mdx_components = (
         result.site_dir / "src/theme/MDXComponents.js"
     ).read_text(encoding="utf-8")

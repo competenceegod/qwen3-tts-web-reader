@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -112,15 +113,52 @@ def _escape_mdx(text: str) -> str:
 def _integer_color(value: object) -> str:
     try:
         color = int(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         color = 0
     return f"#{max(0, min(color, 0xFFFFFF)):06x}"
+
+
+def _bounded_float(
+    value: object,
+    fallback: float,
+    *,
+    minimum: float = 0.1,
+    maximum: float = 256.0,
+) -> float:
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return fallback
+    if not math.isfinite(number):
+        return fallback
+    return max(minimum, min(number, maximum))
+
+
+def _bounded_int(value: object, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except (OverflowError, TypeError, ValueError):
+        return fallback
+
+
+def _font_family(value: object) -> str:
+    font_family = "".join(
+        character
+        for character in str(value or "monospace")
+        if character.isprintable() and character not in "\r\n"
+    ).strip()
+    return (font_family or "monospace")[:256]
 
 
 def _drawing_color(value: object, fallback: str) -> str:
     if not isinstance(value, (list, tuple)) or len(value) < 3:
         return fallback
-    channels = [max(0, min(round(float(channel) * 255), 255)) for channel in value[:3]]
+    try:
+        channels = [
+            max(0, min(round(float(channel) * 255), 255)) for channel in value[:3]
+        ]
+    except (OverflowError, TypeError, ValueError):
+        return fallback
     return f"#{channels[0]:02x}{channels[1]:02x}{channels[2]:02x}"
 
 
@@ -132,14 +170,14 @@ def _code_lines(lines: list[dict[str, Any]]) -> list[CodeLineIR]:
             text = str(span.get("text", ""))
             if not text:
                 continue
-            flags = int(span.get("flags", 0))
-            font_family = str(span.get("font") or "monospace")
+            flags = _bounded_int(span.get("flags", 0))
+            font_family = _font_family(span.get("font"))
             spans.append(
                 CodeSpanIR(
                     text=text,
                     color=_integer_color(span.get("color", 0)),
                     font_family=font_family,
-                    font_size_pt=max(float(span.get("size", 9.0)), 0.1),
+                    font_size_pt=_bounded_float(span.get("size", 9.0), 9.0),
                     bold=bool(flags & 16) or "bold" in font_family.casefold(),
                     italic=bool(flags & 2) or "italic" in font_family.casefold(),
                 )
@@ -231,7 +269,17 @@ def _block_from_pdf(
         for span in spans
         if any(hint in str(span.get("font", "")).casefold() for hint in _MONO_HINTS)
     )
-    max_size = max((float(span.get("size", 0)) for span in spans), default=0)
+    max_size = max(
+        (
+            _bounded_float(
+                span.get("size", 0),
+                0,
+                minimum=0,
+            )
+            for span in spans
+        ),
+        default=0,
+    )
 
     block_type = "paragraph"
     block_text = text
@@ -298,7 +346,7 @@ def _page_ir(
     text_dict = page.get_text("dict", sort=True)
     drawings = page.get_drawings()
     sizes = [
-        float(span.get("size", 0))
+        _bounded_float(span.get("size", 0), 0, minimum=0)
         for block in text_dict.get("blocks", [])
         for line in block.get("lines", [])
         for span in line.get("spans", [])
