@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from booksite.models.book_ir import BookIR
+
+_PDF_CODE_COMPONENT = re.compile(
+    r"<PdfCodeBlock\b[^>]*\bdata=(?P<quote>[\"'])(?P<data>.*?)(?P=quote)[^>]*/?>"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,13 +25,52 @@ def _js_string(value: str | None) -> str:
     return json.dumps(value or "Converted Book", ensure_ascii=True)
 
 
-def _plain_search_text(markdown: str) -> str:
+def _pdf_code_search_text(match: re.Match[str]) -> str:
+    try:
+        payload = json.loads(
+            base64.b64decode(match.group("data"), validate=True).decode("utf-8")
+        )
+        lines = payload["lines"]
+        if not isinstance(lines, list):
+            return " "
+        code_lines = []
+        for line in lines:
+            if not isinstance(line, list):
+                return " "
+            code_lines.append(
+                "".join(
+                    span["text"]
+                    for span in line
+                    if isinstance(span, dict) and isinstance(span.get("text"), str)
+                )
+            )
+        return f" {' '.join(code_lines)} "
+    except (
+        binascii.Error,
+        KeyError,
+        TypeError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        return " "
+
+
+def _plain_markdown_fragment(markdown: str) -> str:
     text = re.sub(r"```.*?```", " ", markdown, flags=re.DOTALL)
-    text = re.sub(r'<PdfCodeBlock data="[^"]*" />', " ", text)
     text = re.sub(r"!\[[^\]]*]\([^)]*\)", " ", text)
     text = re.sub(r"\[([^\]]+)]\([^)]*\)", r"\1", text)
-    text = re.sub(r"[#>*_`|~-]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"[#>*_`|~-]+", " ", text)
+
+
+def _plain_search_text(markdown: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    for match in _PDF_CODE_COMPONENT.finditer(markdown):
+        parts.append(_plain_markdown_fragment(markdown[cursor : match.start()]))
+        parts.append(_pdf_code_search_text(match))
+        cursor = match.end()
+    parts.append(_plain_markdown_fragment(markdown[cursor:]))
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
 
 
 def _search_index_json(book: BookIR) -> str:
