@@ -28,6 +28,14 @@ Additional output and fidelity requirements:
   restore nested list levels.
 - Bookmark headings are emitted at their matching PDF block position, not
   unconditionally at the beginning of the source page.
+- Code blocks preserve the PDF's span-level foreground colors, italic/bold
+  emphasis, declared monospace family, point-size ratio, background fill,
+  accent rule, line indentation, and intentional blank lines. The generated
+  reader must not recolor these blocks through the active Prism theme.
+- PDF-styled code remains usable on the web: it supports copy-to-clipboard,
+  horizontal scrolling without page overflow, and an accessible text
+  representation. If the declared PDF font is unavailable, the reader falls
+  back to a local system monospace font without fetching remote assets.
 
 ## Scope and assumptions
 
@@ -173,6 +181,8 @@ def stable_slug(title: str, source_page: int) -> str:
   hashes remain authoritative if readable IDs collide.
 - Code indentation and semantic list structure are preserved in generated
   Markdown and rendered HTML.
+- At least one light and one dark code surface from the sample PDF render with
+  foreground/background colors matching their PDF drawing and text-span data.
 - The production Docusaurus build succeeds.
 - A generated production build can be opened through the bundled local preview
   launcher without changing `baseUrl` to a machine-specific file path.
