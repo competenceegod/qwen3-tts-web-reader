@@ -331,7 +331,7 @@ class BooksiteServer(ThreadingHTTPServer):
 
 
 def make_handler(
-    build_dir: Path,
+    build_dir: Path | None,
     engine: TtsEngine,
     sessions: TtsSessionStore | None = None,
 ) -> type[SimpleHTTPRequestHandler]:
@@ -339,7 +339,7 @@ def make_handler(
 
     class BooksiteRequestHandler(SimpleHTTPRequestHandler):
         def __init__(self, *args: object, **kwargs: object) -> None:
-            super().__init__(*args, directory=str(build_dir), **kwargs)
+            super().__init__(*args, directory=str(build_dir or Path.cwd()), **kwargs)
 
         def _require_loopback(self) -> None:
             if not is_loopback_client(self.client_address[0]):
@@ -367,6 +367,9 @@ def make_handler(
             stream_prefix = "/api/tts/stream/"
             if route.startswith(stream_prefix):
                 self._stream_tts(route.removeprefix(stream_prefix))
+                return
+            if build_dir is None:
+                self._send_json(404, {"error": "此端口仅提供本地语音接口。"})
                 return
             super().do_GET()
 
@@ -441,27 +444,33 @@ def make_handler(
     return BooksiteRequestHandler
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Preview the generated book site.")
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Preview a book site or serve local Qwen3-TTS.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8000, type=int)
     parser.add_argument("--no-open", action="store_true")
-    return parser.parse_args()
+    parser.add_argument(
+        "--tts-only",
+        action="store_true",
+        help="Serve only the loopback TTS API without requiring a Docusaurus build.",
+    )
+    return parser.parse_args(argv)
 
 
 def main() -> None:
     args = parse_args()
     if not is_loopback_client(args.host):
         raise SystemExit("为保护本地语音接口，--host 必须是 127.0.0.1 或 ::1。")
-    build_dir = Path(__file__).resolve().parent / "build"
-    if not (build_dir / "index.html").is_file():
+    build_dir = None if args.tts_only else Path(__file__).resolve().parent / "build"
+    if build_dir is not None and not (build_dir / "index.html").is_file():
         raise SystemExit(
             "未找到 build/index.html。请先运行 PDF 转换，或在本书目录执行 pnpm build。"
         )
 
     engine = TtsEngine()
     if engine.status()["available"]:
-        print("正在预热 Qwen3-TTS，本地网站稍后自动打开…", flush=True)
+        target = "语音服务" if args.tts_only else "本地网站"
+        print(f"正在预热 Qwen3-TTS，{target}稍后启动…", flush=True)
         engine.warm_up()
     handler = make_handler(build_dir, engine)
     try:
@@ -472,9 +481,10 @@ def main() -> None:
         ) from error
 
     url = f"http://{args.host}:{server.server_port}/"
-    print(f"本地网站：{url}", flush=True)
+    label = "本地语音服务" if args.tts_only else "本地网站"
+    print(f"{label}：{url}", flush=True)
     print("保持此窗口开启；按 Control-C 停止。", flush=True)
-    if not args.no_open:
+    if not args.no_open and not args.tts_only:
         opener = threading.Timer(0.2, webbrowser.open, args=(url,))
         opener.daemon = True
         opener.start()

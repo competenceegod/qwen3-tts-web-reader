@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>普通网页朗读测试</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 24px;
+        font: 18px/1.75 system-ui, sans-serif;
+      }
+      nav,
+      footer {
+        color: #667085;
+      }
+      code {
+        padding: 2px 5px;
+        background: #f2f4f7;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>这段导航文字不应该进入连续朗读队列。</nav>
+    <main>
+      <article>
+        <h1>普通网页朗读测试</h1>
+        <p>
+          第一段用于验证普通 HTML 文章。朗读器应该从选中位置开始，
+          自动识别句子边界，并在播放时高亮当前句子。
+        </p>
+        <p>
+          第二段包含 English words and punctuation. It should remain in
+          document order without reading navigation controls.
+        </p>
+        <ul>
+          <li>列表第一项也属于正文。</li>
+          <li>列表第二项包含一段 <code>inline_code()</code>。</li>
+        </ul>
+      </article>
+    </main>
+    <footer>这段页脚文字不应该进入连续朗读队列。</footer>
+  </body>
+</html>

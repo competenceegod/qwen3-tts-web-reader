@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Qwen3-TTS 网页朗读</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        width: 300px;
+        margin: 0;
+        padding: 16px;
+        color: #172033;
+        background: #fff;
+      }
+      h1 { margin: 0 0 8px; font-size: 17px; }
+      p { margin: 8px 0; }
+      .status {
+        padding: 9px 10px;
+        border-left: 3px solid #8a94a6;
+        background: #f1f4f8;
+      }
+      .status.ready { border-left-color: #27864b; }
+      button {
+        min-height: 34px;
+        margin-top: 8px;
+        border: 1px solid #b8c0cb;
+        border-radius: 6px;
+        padding: 6px 10px;
+        color: inherit;
+        background: transparent;
+        cursor: pointer;
+      }
+      small { display: block; color: #5b6679; }
+      @media (prefers-color-scheme: dark) {
+        body { color: #eef2f8; background: #202633; }
+        .status { background: #2c3442; }
+        small { color: #b5bfce; }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Qwen3-TTS 网页朗读</h1>
+    <p id="status" class="status" role="status" aria-live="polite">正在检查本地服务…</p>
+    <button id="retry" type="button">重新检查</button>
+    <p>在普通网页中选择文字，然后点击浮动按钮即可朗读。</p>
+    <small>连续朗读：从选择处开始；Space 暂停/继续；Esc 停止。</small>
+    <script src="popup.js"></script>
+  </body>
+</html>

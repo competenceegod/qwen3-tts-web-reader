@@ -1,0 +1,15 @@
+#qwen3-tts-extension-root {
+  all: initial;
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+}
+
+::highlight(qwen3-tts-extension-current) {
+  color: inherit;
+  background: rgb(255 204 51 / 48%);
+  text-decoration: underline;
+  text-decoration-color: #ad7300;
+  text-decoration-thickness: 2px;
+}
