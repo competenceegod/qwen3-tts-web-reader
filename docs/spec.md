@@ -13,6 +13,16 @@ Primary user story:
 > pages, an on-page table of contents, source-page traceability, and a quality
 > report.
 
+Additional output and fidelity requirements:
+
+- `--output` identifies a collection root. Each PDF is generated into
+  `<output>/<normalized-pdf-name>-<source-hash>/` so converting another PDF
+  cannot overwrite or mix with an existing book.
+- Reprocessing the same PDF updates only its stable book directory.
+- Monospace code keeps PDF-leading indentation, including short delimiter
+  lines. Bullet glyphs are emitted as semantic Markdown lists, and adjacent
+  list blocks remain one list.
+
 ## Scope and assumptions
 
 - The MVP supports PDFs with a usable native text layer.
@@ -63,23 +73,23 @@ python3 -m venv .venv-core
 # End-to-end conversion
 .venv-core/bin/booksite all input.pdf \
   --config pipeline.yaml \
-  --output workspace/output/book \
+  --output site \
   --max-pages 100
 
 # Targeted reprocessing
 .venv-core/bin/booksite all input.pdf \
   --config pipeline.yaml \
-  --output workspace/output/book \
+  --output site \
   --force-page 32
 
 # Quality gates
 .venv-core/bin/pytest
 .venv-core/bin/ruff check .
-pnpm --dir site build
-pnpm --dir site serve
+pnpm --dir site/<book-id> build
+pnpm --dir site/<book-id> serve
 
 # Open the production build locally on macOS
-open site/打开网站.command
+open site/<book-id>/打开网站.command
 ```
 
 ## Project structure
@@ -88,7 +98,7 @@ open site/打开网站.command
 src/booksite/       Python CLI and conversion pipeline
 tests/              Unit and integration tests
 templates/          Generated-site templates and static resources
-site/               Docusaurus application populated by the last run
+site/               Collection root containing one isolated directory per PDF
 workspace/          Ignored inputs, cache, intermediates, reports, outputs
 docs/               Specification and design decisions
 design/             Accepted UI concept
@@ -113,6 +123,8 @@ def stable_slug(title: str, source_page: int) -> str:
   subprocess adapter validation, cache keys, and MDX escaping.
 - Integration tests build a small synthetic PDF, run the native pipeline, and
   assert BookIR, Markdown, report, and Docusaurus outputs.
+- Output-isolation tests convert two PDFs into one collection root and assert
+  both independently generated sites remain intact.
 - The real sample PDF is an explicit end-to-end acceptance run limited to the
   first 100 pages.
 - Docusaurus production build is a hard gate.
@@ -150,6 +162,10 @@ def stable_slug(title: str, source_page: int) -> str:
 ## Success criteria
 
 - One command converts a text-layer PDF into a generated Docusaurus site.
+- Different PDFs written to the same output root produce different stable
+  book directories and never delete or reuse each other's content.
+- Code indentation and semantic list structure are preserved in generated
+  Markdown and rendered HTML.
 - The production Docusaurus build succeeds.
 - A generated production build can be opened through the bundled local preview
   launcher without changing `baseUrl` to a machine-specific file path.
