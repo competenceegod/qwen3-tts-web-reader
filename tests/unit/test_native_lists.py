@@ -1,5 +1,11 @@
-from booksite.assemble.native import _block_from_pdf, _section_markdown
-from booksite.models.book_ir import BlockIR, PageIR
+from booksite.assemble.native import _block_from_pdf, _escape_mdx, _section_markdown
+from booksite.models.book_ir import (
+    BlockIR,
+    CodeLineIR,
+    CodeSpanIR,
+    CodeStyleIR,
+    PageIR,
+)
 from booksite.models.reports import TocEntry
 
 
@@ -26,7 +32,7 @@ def test_pdf_bullet_glyph_is_emitted_as_semantic_markdown() -> None:
                         "size": 11.0,
                     }
                 ],
-            }
+            },
         ],
     }
 
@@ -195,8 +201,134 @@ def test_nested_bullets_under_ordered_item_use_commonmark_content_indent() -> No
 
     markdown = _section_markdown(section, [page], {1: []})
 
+    assert ("1. Which options apply?\n    - First choice\n    - Second choice") in markdown
+
+
+def test_list_continuation_removes_layout_only_hyphenation() -> None:
+    raw_block = {
+        "bbox": (85.0, 300.0, 470.0, 335.0),
+        "lines": [
+            {
+                "bbox": (85.0, 300.0, 105.0, 315.0),
+                "spans": [{"text": "10.", "font": "MinionPro-Regular", "size": 11.0}],
+            },
+            {
+                "bbox": (110.0, 300.0, 470.0, 315.0),
+                "spans": [
+                    {
+                        "text": "Compare the trade-offs be-",
+                        "font": "MinionPro-Regular",
+                        "size": 11.0,
+                    }
+                ],
+            },
+            {
+                "bbox": (85.0, 320.0, 150.0, 335.0),
+                "spans": [{"text": "tween them:", "font": "MinionPro-Regular", "size": 11.0}],
+            },
+        ],
+    }
+
+    block = _block_from_pdf(
+        raw_block,
+        page_index=88,
+        order=17,
+        repeated_marginals=set(),
+        toc_titles={},
+        typical_font_size=11.0,
+        page_height=666.0,
+    )
+
+    assert block is not None
+    assert block.markdown == "10. Compare the trade-offs between them:"
+
+
+def test_styled_code_between_peer_list_items_preserves_list_context() -> None:
+    code_style = CodeStyleIR(
+        background_color="#fafafa",
+        border_color="#e1e1e1",
+        font_size_pt=9.0,
+    )
+
+    def list_block(order: int, x: float, markdown: str) -> BlockIR:
+        return BlockIR(
+            block_id=f"p0089-b{order + 1:03d}",
+            page_index=88,
+            order=order,
+            type="list",
+            bbox=(x, 400 + order * 20, 470, 415 + order * 20),
+            text=markdown,
+            markdown=markdown,
+            source_engine="native",
+        )
+
+    def code_block(order: int, text: str) -> BlockIR:
+        return BlockIR(
+            block_id=f"p0089-b{order + 1:03d}",
+            page_index=88,
+            order=order,
+            type="code",
+            bbox=(148.5, 400 + order * 20, 430, 415 + order * 20),
+            text=text,
+            markdown=f"```text\n{text}\n```",
+            code_lines=[
+                CodeLineIR(
+                    spans=[
+                        CodeSpanIR(
+                            text=text,
+                            color="#383a42",
+                            font_family="Consolas",
+                            font_size_pt=9.0,
+                        )
+                    ]
+                )
+            ],
+            code_style=code_style,
+            source_engine="native",
+        )
+
+    page = PageIR(
+        page_index=88,
+        width=540,
+        height=666,
+        native_text="review approaches",
+        native_text_char_count=17,
+        blocks=[
+            list_block(0, 85.7, "10. Compare the following approaches:"),
+            list_block(1, 116.2, "- Approach A"),
+            code_block(2, "from provider_a import ModelA"),
+            list_block(3, 116.2, "- Approach B"),
+            code_block(4, "from provider_b import ModelB"),
+        ],
+        primary_engine="native",
+        selected_engine="native",
+        quality_score=1.0,
+    )
+    section = TocEntry(
+        level=1,
+        title="Review",
+        start_page=89,
+        end_page=89,
+        source="pdf_bookmark",
+        slug="review",
+    )
+
+    markdown = _section_markdown(section, [page] * 89, {89: []})
+    component_lines = [line for line in markdown.splitlines() if "<PdfCodeBlock" in line]
+
+    assert "    - Approach A" in markdown
+    assert "    - Approach B" in markdown
+    assert len(component_lines) == 2
+    assert all(line.startswith("        <PdfCodeBlock") for line in component_lines)
+
+
+def test_paragraphs_starting_with_mdx_module_keywords_remain_literal_text() -> None:
+    assert _escape_mdx("import os") == "import&#32;os"
     assert (
-        "1. Which options apply?\n"
-        "    - First choice\n"
-        "    - Second choice"
-    ) in markdown
+        _escape_mdx("export OPENAI_API_KEY=<your token>")
+        == "export&#32;OPENAI\\_API\\_KEY=&lt;your token&gt;"
+    )
+
+
+def test_mdx_brace_entities_render_as_braces_instead_of_literal_entity_text() -> None:
+    assert _escape_mdx('{"topic": "a rainy day"}') == ('&#123;"topic": "a rainy day"&#125;')

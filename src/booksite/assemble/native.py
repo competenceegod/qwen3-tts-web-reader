@@ -30,14 +30,27 @@ from booksite.normalize.headers_footers import (
 from booksite.normalize.text import dehyphenate_line_breaks, normalize_unicode
 from booksite.quality.rules import NativeTextStatus
 
-_LIST_MARKER = re.compile(
-    r"^\s*(?P<marker>[-*•]|\d+[.)])\s+(?P<content>.+)$"
-)
+_LIST_MARKER = re.compile(r"^\s*(?P<marker>[-*•]|\d+[.)])\s+(?P<content>.+)$")
 _LIST_MARKER_ONLY = re.compile(r"^\s*(?P<marker>[-*•]|\d+[.)])\s*$")
 _SHORT_CODE_SYNTAX = re.compile(r"^[\s()[\]{},.:;|&+*/%=<>!~^-]+$")
 _MARKDOWN_PUNCTUATION = re.compile(r"([\\`*_[\]()#!|])")
+_MDX_ESM_PREFIX = re.compile(r"^(import|export)[ \t]+")
 _MONO_HINTS = ("mono", "courier", "code", "consol")
 _LIST_INDENT_POINTS = 24.0
+_URL_PREFIX_AND_BASE = re.compile(r"^(?P<prefix>[A-Za-z][^\n]*?:\s+)(?P<url>https?://[^\s]+/)$")
+_URL_PATH_CONTINUATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
+_CODE_STATEMENT = re.compile(
+    r"""^\s*(?:
+        (?:from\s+\S+\s+import|import\s+\S+|def\s+\w+|class\s+\w+|async\s+def\s+\w+)\b
+        |(?:if|elif|else|for|while|with|try|except|finally|return|raise|yield|assert)\b
+        |(?:pip|conda|python|python3|uv|npm|pnpm|ollama|docker|git|curl|wget|bash|zsh|export)\s+
+        |[@#$!%]
+        |(?:[A-Za-z_]\w*(?:[.\[][^=]*)?)\s*=\s*\S
+        |[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*\(
+        |(?:\.\.\.|[)\]}]+[|,;]?)
+    )""",
+    re.VERBOSE,
+)
 
 
 def _raw_line_text(line: dict[str, Any]) -> str:
@@ -73,7 +86,7 @@ def _list_markdown(lines: list[str]) -> str | None:
             continue
         if not items:
             return None
-        items[-1] = f"{items[-1]} {_escape_mdx(line)}"
+        items[-1] = dehyphenate_line_breaks(f"{items[-1]}\n{_escape_mdx(line)}").replace("\n", " ")
     if pending_marker is not None or not items:
         return None
     return "\n".join(items)
@@ -107,7 +120,9 @@ def _escape_mdx(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-    return _MARKDOWN_PUNCTUATION.sub(r"\\\1", html_safe)
+    markdown_safe = _MARKDOWN_PUNCTUATION.sub(r"\\\1", html_safe)
+    markdown_safe = markdown_safe.replace(r"&\#123;", "&#123;").replace(r"&\#125;", "&#125;")
+    return _MDX_ESM_PREFIX.sub(r"\1&#32;", markdown_safe)
 
 
 def _integer_color(value: object) -> str:
@@ -154,9 +169,7 @@ def _drawing_color(value: object, fallback: str) -> str:
     if not isinstance(value, (list, tuple)) or len(value) < 3:
         return fallback
     try:
-        channels = [
-            max(0, min(round(float(channel) * 255), 255)) for channel in value[:3]
-        ]
+        channels = [max(0, min(round(float(channel) * 255), 255)) for channel in value[:3]]
     except (OverflowError, TypeError, ValueError):
         return fallback
     return f"#{channels[0]:02x}{channels[1]:02x}{channels[2]:02x}"
@@ -190,7 +203,16 @@ def _code_style_for_bbox(
     drawings: list[dict[str, Any]],
     bbox: tuple[float, float, float, float],
     font_size_pt: float,
-) -> CodeStyleIR:
+) -> CodeStyleIR | None:
+    style, _ = _code_surface_for_bbox(drawings, bbox, font_size_pt)
+    return style
+
+
+def _code_surface_for_bbox(
+    drawings: list[dict[str, Any]],
+    bbox: tuple[float, float, float, float],
+    font_size_pt: float,
+) -> tuple[CodeStyleIR | None, tuple[float, float, float, float] | None]:
     block_rect = pymupdf.Rect(bbox)
     center = (block_rect.x0 + block_rect.x1) / 2, (block_rect.y0 + block_rect.y1) / 2
     surfaces: list[tuple[float, pymupdf.Rect, dict[str, Any]]] = []
@@ -201,11 +223,7 @@ def _code_style_for_bbox(
         if rect.contains(center):
             surfaces.append((rect.get_area(), rect, drawing))
     if not surfaces:
-        return CodeStyleIR(
-            background_color="#f8f8f8",
-            border_color="#d8dee9",
-            font_size_pt=font_size_pt,
-        )
+        return None, None
 
     _, surface_rect, surface = min(surfaces, key=lambda item: item[0])
     border_color = "#d8dee9"
@@ -214,17 +232,29 @@ def _code_style_for_bbox(
             continue
         line_rect = pymupdf.Rect(drawing["rect"])
         same_vertical_extent = (
-            abs(line_rect.y0 - surface_rect.y0) <= 2
-            and abs(line_rect.y1 - surface_rect.y1) <= 2
+            abs(line_rect.y0 - surface_rect.y0) <= 2 and abs(line_rect.y1 - surface_rect.y1) <= 2
         )
         if same_vertical_extent and abs(line_rect.x0 - surface_rect.x0) <= 4:
             border_color = _drawing_color(drawing["color"], border_color)
             break
-    return CodeStyleIR(
-        background_color=_drawing_color(surface.get("fill"), "#f8f8f8"),
-        border_color=border_color,
-        font_size_pt=font_size_pt,
+    return (
+        CodeStyleIR(
+            background_color=_drawing_color(surface.get("fill"), "#f8f8f8"),
+            border_color=border_color,
+            font_size_pt=font_size_pt,
+        ),
+        tuple(float(value) for value in surface_rect),
     )
+
+
+def _looks_like_code(text: str) -> bool:
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    code_like = sum(
+        bool(_CODE_STATEMENT.match(line) or _SHORT_CODE_SYNTAX.fullmatch(line)) for line in lines
+    )
+    return code_like >= max(1, math.ceil(len(lines) / 2))
 
 
 def _block_from_pdf(
@@ -245,8 +275,7 @@ def _block_from_pdf(
         marginal = vertical_ratio <= 0.1 or vertical_ratio >= 0.9
         normalized_marginal = normalize_marginal_text(text)
         if marginal and (
-            normalized_marginal == "<page-number>"
-            or normalized_marginal in repeated_marginals
+            normalized_marginal == "<page-number>" or normalized_marginal in repeated_marginals
         ):
             continue
         kept_lines.append(line)
@@ -289,9 +318,9 @@ def _block_from_pdf(
         block_type = "title"
         heading_level = toc_titles[normalized]
         markdown = f"{'#' * heading_level} {_escape_mdx(text)}"
-    elif mono_chars / char_total >= 0.45 and (
-        len(text) >= 8 or _SHORT_CODE_SYNTAX.fullmatch(text)
-    ):
+    elif (
+        mono_chars / char_total >= 0.45 and (len(text) >= 8 or _SHORT_CODE_SYNTAX.fullmatch(text))
+    ) or (code_style is not None and _looks_like_code(code_text)):
         block_type = "code"
         block_text = code_text
         markdown = f"```text\n{code_text}\n```"
@@ -308,19 +337,18 @@ def _block_from_pdf(
 
     bbox = tuple(float(value) for value in raw_block["bbox"])
     styled_code_lines: list[CodeLineIR] = []
-    if block_type == "code":
+    if block_type == "code" or code_style is not None:
         styled_code_lines = _code_lines(kept_lines)
-        code_sizes = [
-            span.font_size_pt
-            for line in styled_code_lines
-            for span in line.spans
-        ]
+        code_sizes = [span.font_size_pt for line in styled_code_lines for span in line.spans]
         effective_size = median(code_sizes) if code_sizes else max(typical_font_size, 0.1)
-        code_style = (code_style or CodeStyleIR(
-            background_color="#f8f8f8",
-            border_color="#d8dee9",
-            font_size_pt=effective_size,
-        )).model_copy(update={"font_size_pt": effective_size})
+        code_style = (
+            code_style
+            or CodeStyleIR(
+                background_color="#f8f8f8",
+                border_color="#d8dee9",
+                font_size_pt=effective_size,
+            )
+        ).model_copy(update={"font_size_pt": effective_size})
     return BlockIR(
         block_id=f"p{page_index + 1:04d}-b{order + 1:03d}",
         page_index=page_index,
@@ -330,11 +358,190 @@ def _block_from_pdf(
         text=block_text,
         markdown=markdown,
         code_lines=styled_code_lines,
-        code_style=code_style if block_type == "code" else None,
+        code_style=code_style,
         heading_level=heading_level,
         source_engine="native",
         confidence=1.0,
     )
+
+
+def _nearby_left_aligned(previous: BlockIR, current: BlockIR) -> bool:
+    if previous.page_index != current.page_index or previous.bbox is None or current.bbox is None:
+        return False
+    vertical_gap = current.bbox[1] - previous.bbox[3]
+    return -1.0 <= vertical_gap <= 6.0 and abs(current.bbox[0] - previous.bbox[0]) <= 3.0
+
+
+def _url_callout_markdown(
+    prefix: str,
+    url: str,
+    suffix: str,
+    style: CodeStyleIR,
+) -> str:
+    payload = {
+        "prefix": prefix,
+        "url": url,
+        "suffix": suffix,
+        "backgroundColor": style.background_color,
+        "borderColor": style.border_color,
+    }
+    encoded = base64.b64encode(
+        json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode()
+    ).decode()
+    return f'<PdfUrlCallout data="{encoded}" />'
+
+
+def _same_code_surface(first: CodeStyleIR, second: CodeStyleIR) -> bool:
+    return (
+        first.background_color == second.background_color
+        and first.border_color == second.border_color
+    )
+
+
+def _color_channels(color: str) -> tuple[int, int, int] | None:
+    value = color.removeprefix("#")
+    if len(value) != 6:
+        return None
+    try:
+        return tuple(int(value[index : index + 2], 16) for index in (0, 2, 4))
+    except ValueError:
+        return None
+
+
+def _is_known_dark_code_surface(style: CodeStyleIR) -> bool:
+    """Recognize the PDF's Dracula-like output palette without swallowing dark callouts."""
+    background = _color_channels(style.background_color)
+    border = _color_channels(style.border_color)
+    if background is None or border is None:
+        return False
+    expected_background = (40, 42, 54)
+    expected_border = (68, 71, 90)
+    return all(
+        abs(actual - expected) <= 4
+        for actual, expected in zip(
+            background + border,
+            expected_background + expected_border,
+            strict=True,
+        )
+    )
+
+
+def _promote_shaded_code_surfaces(
+    blocks: list[BlockIR],
+    surface_by_block: dict[str, tuple[float, float, float, float]],
+    page_area: float,
+) -> list[BlockIR]:
+    grouped: dict[tuple[float, float, float, float], list[int]] = defaultdict(list)
+    for index, block in enumerate(blocks):
+        if surface := surface_by_block.get(block.block_id):
+            grouped[surface].append(index)
+
+    promoted = list(blocks)
+    for surface, indices in grouped.items():
+        surface_area = max(0.0, surface[2] - surface[0]) * max(0.0, surface[3] - surface[1])
+        if page_area > 0 and surface_area / page_area > 0.5:
+            continue
+        anchors = [blocks[index] for index in indices if blocks[index].type == "code"]
+        surface_blocks = [
+            blocks[index] for index in indices if blocks[index].code_style is not None
+        ]
+        dark_surface_blocks = [
+            block
+            for block in surface_blocks
+            if block.code_style is not None and _is_known_dark_code_surface(block.code_style)
+        ]
+        if not anchors and not dark_surface_blocks:
+            continue
+        all_sizes = [
+            span.font_size_pt
+            for index in indices
+            for line in blocks[index].code_lines
+            for span in line.spans
+        ]
+        common_style = (anchors or dark_surface_blocks)[0].code_style
+        if common_style is None:
+            continue
+        if all_sizes:
+            common_style = common_style.model_copy(update={"font_size_pt": median(all_sizes)})
+        for index in indices:
+            block = blocks[index]
+            if block.type not in {"code", "list", "paragraph"} or not block.code_lines:
+                continue
+            code_text = "\n".join(
+                "".join(span.text for span in line.spans) for line in block.code_lines
+            ).strip("\n")
+            promoted[index] = block.model_copy(
+                update={
+                    "type": "code",
+                    "text": code_text,
+                    "markdown": f"```text\n{code_text}\n```",
+                    "code_style": common_style,
+                    "heading_level": None,
+                }
+            )
+    return promoted
+
+
+def _merge_pdf_url_callouts(blocks: list[BlockIR]) -> list[BlockIR]:
+    """Join a PDF prose line and monospaced URL continuations into one callout."""
+    merged: list[BlockIR] = []
+    index = 0
+    while index < len(blocks):
+        if index + 2 >= len(blocks):
+            merged.extend(blocks[index:])
+            break
+        prose, mixed_url, url_tail = blocks[index : index + 3]
+        match = (
+            _URL_PREFIX_AND_BASE.fullmatch((mixed_url.text or "").strip())
+            if prose.type == "paragraph"
+            and (prose.text or "").rstrip().endswith("-")
+            and mixed_url.type in {"paragraph", "code"}
+            and url_tail.type in {"paragraph", "code"}
+            and mixed_url.code_style is not None
+            and url_tail.code_style is not None
+            and _same_code_surface(mixed_url.code_style, url_tail.code_style)
+            and _nearby_left_aligned(prose, mixed_url)
+            and _nearby_left_aligned(mixed_url, url_tail)
+            else None
+        )
+        tail = (url_tail.text or "").strip()
+        suffix = tail[-1:] if tail.endswith((".", ",", ";", ":")) else ""
+        path = tail[: -len(suffix)] if suffix else tail
+        if match is None or _URL_PATH_CONTINUATION.fullmatch(path) is None:
+            merged.append(prose)
+            index += 1
+            continue
+
+        prefix = dehyphenate_line_breaks(f"{(prose.text or '').rstrip()}\n{match.group('prefix')}")
+        url = f"{match.group('url')}{path}"
+        text = f"{prefix}{url}{suffix}"
+        bboxes = [block.bbox for block in (prose, mixed_url, url_tail) if block.bbox is not None]
+        bbox = (
+            (
+                min(item[0] for item in bboxes),
+                min(item[1] for item in bboxes),
+                max(item[2] for item in bboxes),
+                max(item[3] for item in bboxes),
+            )
+            if bboxes
+            else prose.bbox
+        )
+        merged.append(
+            prose.model_copy(
+                update={
+                    "bbox": bbox,
+                    "text": text,
+                    "markdown": _url_callout_markdown(
+                        prefix,
+                        url,
+                        suffix,
+                        mixed_url.code_style,
+                    ),
+                }
+            )
+        )
+        index += 3
+    return merged
 
 
 def _page_ir(
@@ -355,9 +562,21 @@ def _page_ir(
     typical_size = median(sizes) if sizes else 11
     toc_titles = {" ".join(entry.title.casefold().split()): entry.level for entry in entries}
     blocks = []
+    surface_by_block: dict[str, tuple[float, float, float, float]] = {}
     for order, raw_block in enumerate(text_dict.get("blocks", [])):
         if raw_block.get("type", 0) != 0:
             continue
+        bbox = tuple(float(value) for value in raw_block["bbox"])
+        code_style, surface = _code_surface_for_bbox(
+            drawings,
+            bbox,
+            typical_size,
+        )
+        if surface is not None:
+            surface_area = max(0.0, surface[2] - surface[0]) * max(0.0, surface[3] - surface[1])
+            if page.rect.get_area() > 0 and surface_area / page.rect.get_area() > 0.5:
+                code_style = None
+                surface = None
         block = _block_from_pdf(
             raw_block,
             page.number,
@@ -366,14 +585,18 @@ def _page_ir(
             toc_titles,
             typical_size,
             page.rect.height,
-            _code_style_for_bbox(
-                drawings,
-                tuple(float(value) for value in raw_block["bbox"]),
-                typical_size,
-            ),
+            code_style,
         )
         if block is not None:
             blocks.append(block)
+            if surface is not None:
+                surface_by_block[block.block_id] = surface
+    blocks = _promote_shaded_code_surfaces(
+        blocks,
+        surface_by_block,
+        page.rect.get_area(),
+    )
+    blocks = _merge_pdf_url_callouts(blocks)
 
     score_by_status = {
         NativeTextStatus.TEXT_GOOD: 1.0,
@@ -538,20 +761,26 @@ def _section_markdown(
     previous_block_type: str | None = None
     previous_block: BlockIR | None = None
     list_base_x: float | None = None
+    list_level = 0
     pending_styled_code: list[BlockIR] = []
+    pending_styled_code_indent = 0
 
     def flush_styled_code() -> None:
         if pending_styled_code:
-            parts.append(_styled_code_markdown(pending_styled_code))
+            markdown = _styled_code_markdown(pending_styled_code)
+            if pending_styled_code_indent:
+                prefix = " " * pending_styled_code_indent
+                markdown = "\n".join(
+                    f"{prefix}{line}" if line else line for line in markdown.splitlines()
+                )
+            parts.append(markdown)
             pending_styled_code.clear()
 
     source_pages = range(section.start_page, (section.end_page or section.start_page) + 1)
     for page_number in source_pages:
         page = pages[page_number - 1]
         page_entries = [
-            entry
-            for entry in nested_entries.get(page_number, [])
-            if entry.level > section.level
+            entry for entry in nested_entries.get(page_number, []) if entry.level > section.level
         ]
         entries_by_title = {
             " ".join(entry.title.casefold().split()): entry for entry in page_entries
@@ -572,20 +801,20 @@ def _section_markdown(
         section_title = " ".join(section.title.casefold().split())
         for block in page.blocks:
             styled_code = (
-                block.type == "code"
-                and bool(block.code_lines)
-                and block.code_style is not None
+                block.type == "code" and bool(block.code_lines) and block.code_style is not None
             )
             if styled_code:
-                if (
-                    pending_styled_code
-                    and pending_styled_code[-1].code_style != block.code_style
-                ):
+                if pending_styled_code and pending_styled_code[-1].code_style != block.code_style:
                     flush_styled_code()
+                if not pending_styled_code:
+                    pending_styled_code_indent = (
+                        (list_level + 1) * 4
+                        if list_base_x is not None and previous_block_type in {"list", "code"}
+                        else 0
+                    )
                 pending_styled_code.append(block)
                 previous_block_type = "code"
                 previous_block = block
-                list_base_x = None
                 continue
             flush_styled_code()
             normalized = " ".join((block.text or "").casefold().split())
@@ -618,9 +847,14 @@ def _section_markdown(
                         previous_block = block
                         continue
                 if block.type == "list":
-                    if previous_block_type != "list":
+                    if previous_block_type not in {"list", "code"}:
                         list_base_x = block.bbox[0] if block.bbox is not None else None
                     indented = _indent_list(block.markdown, list_base_x, block)
+                    if list_base_x is not None and block.bbox is not None:
+                        list_level = max(
+                            0,
+                            round((block.bbox[0] - list_base_x) / _LIST_INDENT_POINTS),
+                        )
                     if previous_block_type == "list":
                         parts[-1] = f"{parts[-1]}\n{indented}"
                         previous_block = block
@@ -639,7 +873,9 @@ def _section_markdown(
                 parts.append(block.markdown)
                 previous_block_type = block.type
                 previous_block = block
-                list_base_x = None
+                if block.type != "code":
+                    list_base_x = None
+                    list_level = 0
     flush_styled_code()
     end_page = section.end_page or section.start_page
     page_label = (

@@ -181,8 +181,16 @@ def stable_slug(title: str, source_page: int) -> str:
   hashes remain authoritative if readable IDs collide.
 - Code indentation and semantic list structure are preserved in generated
   Markdown and rendered HTML.
+- Same-level PDF list items keep the same nesting and marker style when rich
+  blocks such as styled code appear between them; those rich blocks remain
+  children of the preceding list item.
+- Layout-only hyphenation is removed from list continuations and recognized
+  multi-block callouts.
 - At least one light and one dark code surface from the sample PDF render with
   foreground/background colors matching their PDF drawing and text-span data.
+- Mixed prose-and-URL callouts are emitted as one shaded callout with a complete
+  clickable URL, without misclassifying the prose or URL continuation as
+  separate copyable code blocks.
 - The production Docusaurus build succeeds.
 - A generated production build can be opened through the bundled local preview
   launcher without changing `baseUrl` to a machine-specific file path.

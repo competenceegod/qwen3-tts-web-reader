@@ -9,8 +9,9 @@ from pathlib import Path
 
 from booksite.models.book_ir import BookIR
 
-_PDF_CODE_COMPONENT = re.compile(
-    r"<PdfCodeBlock\b[^>]*\bdata=(?P<quote>[\"'])(?P<data>.*?)(?P=quote)[^>]*/?>"
+_PDF_EMBEDDED_COMPONENT = re.compile(
+    r"<(?P<component>PdfCodeBlock|PdfUrlCallout)\b[^>]*"
+    r"\bdata=(?P<quote>[\"'])(?P<data>.*?)(?P=quote)[^>]*/?>"
 )
 
 
@@ -27,9 +28,7 @@ def _js_string(value: str | None) -> str:
 
 def _pdf_code_search_text(match: re.Match[str]) -> str:
     try:
-        payload = json.loads(
-            base64.b64decode(match.group("data"), validate=True).decode("utf-8")
-        )
+        payload = json.loads(base64.b64decode(match.group("data"), validate=True).decode("utf-8"))
         lines = payload["lines"]
         if not isinstance(lines, list):
             return " "
@@ -55,6 +54,25 @@ def _pdf_code_search_text(match: re.Match[str]) -> str:
         return " "
 
 
+def _pdf_url_search_text(match: re.Match[str]) -> str:
+    try:
+        payload = json.loads(base64.b64decode(match.group("data"), validate=True).decode("utf-8"))
+        prefix = payload["prefix"]
+        url = payload["url"]
+        suffix = payload["suffix"]
+        if not all(isinstance(value, str) for value in (prefix, url, suffix)):
+            return " "
+        return f" {prefix}{url}{suffix} "
+    except (
+        binascii.Error,
+        KeyError,
+        TypeError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        return " "
+
+
 def _plain_markdown_fragment(markdown: str) -> str:
     text = re.sub(r"```.*?```", " ", markdown, flags=re.DOTALL)
     text = re.sub(r"!\[[^\]]*]\([^)]*\)", " ", text)
@@ -65,9 +83,13 @@ def _plain_markdown_fragment(markdown: str) -> str:
 def _plain_search_text(markdown: str) -> str:
     parts: list[str] = []
     cursor = 0
-    for match in _PDF_CODE_COMPONENT.finditer(markdown):
+    for match in _PDF_EMBEDDED_COMPONENT.finditer(markdown):
         parts.append(_plain_markdown_fragment(markdown[cursor : match.start()]))
-        parts.append(_pdf_code_search_text(match))
+        parts.append(
+            _pdf_code_search_text(match)
+            if match.group("component") == "PdfCodeBlock"
+            else _pdf_url_search_text(match)
+        )
         cursor = match.end()
     parts.append(_plain_markdown_fragment(markdown[cursor:]))
     return re.sub(r"\s+", " ", " ".join(parts)).strip()
@@ -223,13 +245,41 @@ export default function PdfCodeBlock({data}) {
 """
 
 
+def _pdf_url_callout_js() -> str:
+    return """import React, {useMemo} from 'react';
+
+export default function PdfUrlCallout({data}) {
+  const callout = useMemo(() => JSON.parse(atob(data)), [data]);
+
+  return (
+    <aside
+      className="booksite-pdf-url-callout"
+      aria-label="Source link"
+      style={{
+        '--pdf-callout-background': callout.backgroundColor,
+        '--pdf-callout-border': callout.borderColor,
+      }}
+    >
+      <span>{callout.prefix}</span>
+      <a href={callout.url} rel="noreferrer">
+        <code>{callout.url}</code>
+      </a>
+      <span>{callout.suffix}</span>
+    </aside>
+  );
+}
+"""
+
+
 def _mdx_components_js() -> str:
     return """import MDXComponents from '@theme-original/MDXComponents';
 import PdfCodeBlock from '@site/src/components/PdfCodeBlock';
+import PdfUrlCallout from '@site/src/components/PdfUrlCallout';
 
 export default {
   ...MDXComponents,
   PdfCodeBlock,
+  PdfUrlCallout,
 };
 """
 
@@ -659,6 +709,30 @@ pre { border: 1px solid var(--booksite-border); border-radius: 6px; box-shadow: 
 }
 .booksite-pdf-code:hover button,
 .booksite-pdf-code button:focus-visible { opacity: 1; }
+.booksite-pdf-url-callout {
+  max-width: 100%;
+  margin: 1.2rem 0;
+  padding: 0.85rem 1.25rem;
+  border-left: 4px solid var(--pdf-callout-border);
+  background: var(--pdf-callout-background);
+  color: inherit;
+  font: inherit;
+  line-height: 1.72;
+}
+.booksite-pdf-url-callout a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+.booksite-pdf-url-callout code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-family: Consolas, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.92em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 table { display: table; width: 100%; }
 table thead { position: sticky; top: var(--ifm-navbar-height); z-index: 1; }
 table th { background: var(--booksite-surface); }
@@ -811,6 +885,10 @@ def generate_docusaurus_site(book: BookIR, site_dir: str | Path) -> SiteGenerati
     )
     (components_dir / "PdfCodeBlock.js").write_text(
         _pdf_code_block_js(),
+        encoding="utf-8",
+    )
+    (components_dir / "PdfUrlCallout.js").write_text(
+        _pdf_url_callout_js(),
         encoding="utf-8",
     )
     (theme_dir / "MDXComponents.js").write_text(

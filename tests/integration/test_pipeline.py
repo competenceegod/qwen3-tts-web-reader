@@ -51,6 +51,40 @@ def test_pipeline_creates_cached_ir_report_and_site(tmp_path: Path) -> None:
     assert changed_result.used_cached_assembly is False
 
 
+def test_pipeline_does_not_reuse_native_book_ir_v5_cache(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "input.pdf"
+    _write_test_pdf(pdf_path, "A Test Book")
+    config = PipelineConfig.model_validate({"docling": {"enabled": False}})
+    runner = PipelineRunner(config, workspace_root=tmp_path / "workspace")
+    report, _, _ = runner.audit(pdf_path)
+    fresh_book, _ = runner.assemble(pdf_path, report, force=True)
+    current_stage = f"assemble-pages-all-{runner.config_fingerprint}"
+    runner.cache.stage_path(report.book_id, current_stage).unlink()
+
+    legacy_config = json.dumps(
+        {
+            "cache_schema_version": "native-book-ir-v5",
+            "config": config.model_dump(mode="json"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    legacy_fingerprint = hashlib.sha256(legacy_config).hexdigest()[:12]
+    legacy_stage = f"assemble-pages-all-{legacy_fingerprint}"
+    stale_book = fresh_book.model_copy(update={"title": "STALE V5 BOOK"})
+    runner.cache.write_json(
+        report.book_id,
+        legacy_stage,
+        stale_book.model_dump(mode="json"),
+    )
+
+    rebuilt_book, used_cache = runner.assemble(pdf_path, report)
+
+    assert used_cache is False
+    assert rebuilt_book.title == "A Test Book"
+
+
 def test_runner_rejects_non_default_options_that_are_not_implemented(
     tmp_path: Path,
 ) -> None:
@@ -88,6 +122,30 @@ def test_pipeline_keeps_different_pdfs_in_separate_site_directories(tmp_path: Pa
     assert first_marker.read_text(encoding="utf-8") == "preserve me"
     assert (first.site_dir / "docs").is_dir()
     assert (second.site_dir / "docs").is_dir()
+
+
+def test_pipeline_separates_same_named_pdfs_with_different_content(
+    tmp_path: Path,
+) -> None:
+    first_pdf = tmp_path / "first" / "Shared Guide.pdf"
+    second_pdf = tmp_path / "second" / "Shared Guide.pdf"
+    first_pdf.parent.mkdir()
+    second_pdf.parent.mkdir()
+    _write_test_pdf(first_pdf, "First Shared Guide")
+    _write_test_pdf(second_pdf, "Second Shared Guide")
+    runner = PipelineRunner(
+        PipelineConfig.model_validate({"docling": {"enabled": False}}),
+        workspace_root=tmp_path / "workspace",
+    )
+
+    first = runner.run_all(first_pdf, tmp_path / "site", build_site=False)
+    second = runner.run_all(second_pdf, tmp_path / "site", build_site=False)
+
+    assert first.book_id != second.book_id
+    assert first.site_dir.name.startswith("shared-guide-")
+    assert second.site_dir.name.startswith("shared-guide-")
+    assert first.site_dir.is_dir()
+    assert second.site_dir.is_dir()
 
 
 def test_pipeline_rejects_symlinked_book_target(tmp_path: Path) -> None:
@@ -166,9 +224,7 @@ def test_pipeline_rejects_book_id_collision_using_full_hash_manifest(
     with pytest.raises(RuntimeError, match="different source PDF"):
         runner.run_all(second_pdf, output_root, build_site=False)
 
-    manifest = json.loads(
-        (first.site_dir / ".booksite-site.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((first.site_dir / ".booksite-site.json").read_text(encoding="utf-8"))
     assert manifest["source_sha256"] == hashlib.sha256(first_pdf.read_bytes()).hexdigest()
 
 

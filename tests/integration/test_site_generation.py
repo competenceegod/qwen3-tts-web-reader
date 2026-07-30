@@ -43,6 +43,7 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert (result.site_dir / "src/pages/search.js").exists()
     assert (result.site_dir / "src/pages/quality-report.js").exists()
     assert (result.site_dir / "src/components/PdfCodeBlock.js").exists()
+    assert (result.site_dir / "src/components/PdfUrlCallout.js").exists()
     assert (result.site_dir / "src/theme/MDXComponents.js").exists()
     assert (result.site_dir / "static/favicon.svg").exists()
     config = (result.site_dir / "docusaurus.config.mjs").read_text(encoding="utf-8")
@@ -59,18 +60,25 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert "overflow-x: auto" in css
     assert "background: rgb(255 255 255 / 92%)" in css
     assert "color: #121826" in css
-    code_component = (
-        result.site_dir / "src/components/PdfCodeBlock.js"
-    ).read_text(encoding="utf-8")
+    assert ".booksite-pdf-url-callout" in css
+    assert "overflow-wrap: anywhere" in css
+    code_component = (result.site_dir / "src/components/PdfCodeBlock.js").read_text(
+        encoding="utf-8"
+    )
     assert "JSON.parse(atob(data))" in code_component
     assert "aria-label={copied ? 'Code copied' : 'Copy code'}" in code_component
     assert 'aria-live="polite"' in code_component
     assert "navigator.clipboard.writeText" in code_component
     assert ".replace(/[ \\t]+$/u, '')" in code_component
-    mdx_components = (
-        result.site_dir / "src/theme/MDXComponents.js"
-    ).read_text(encoding="utf-8")
+    url_component = (result.site_dir / "src/components/PdfUrlCallout.js").read_text(
+        encoding="utf-8"
+    )
+    assert "JSON.parse(atob(data))" in url_component
+    assert "<a href={callout.url}" in url_component
+    assert "<code>{callout.url}</code>" in url_component
+    mdx_components = (result.site_dir / "src/theme/MDXComponents.js").read_text(encoding="utf-8")
     assert "PdfCodeBlock" in mdx_components
+    assert "PdfUrlCallout" in mdx_components
     search_index = json.loads(
         (result.site_dir / "static/search-index.json").read_text(encoding="utf-8")
     )

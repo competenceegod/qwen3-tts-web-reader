@@ -46,11 +46,7 @@ def _styled_code_payload() -> str:
 
 def test_search_text_indexes_code_without_encoded_style_payload() -> None:
     encoded = _styled_code_payload()
-    markdown = (
-        "Before code.\n\n"
-        f'<PdfCodeBlock data="{encoded}" />\n\n'
-        "After code."
-    )
+    markdown = f'Before code.\n\n<PdfCodeBlock data="{encoded}" />\n\nAfter code.'
 
     search_text = _plain_search_text(markdown)
 
@@ -70,11 +66,26 @@ def test_search_text_ignores_malformed_pdf_code_payload() -> None:
 
 def test_search_text_does_not_collide_with_plain_document_text() -> None:
     encoded = _styled_code_payload()
-    markdown = (
-        "Literal BOOKSITECODETOKEN0Z.\n\n"
-        f'<PdfCodeBlock data="{encoded}" />'
-    )
+    markdown = f'Literal BOOKSITECODETOKEN0Z.\n\n<PdfCodeBlock data="{encoded}" />'
 
     assert _plain_search_text(markdown).startswith(
         "Literal BOOKSITECODETOKEN0Z. from langgraph.graph"
     )
+
+
+def test_search_text_indexes_url_callout_without_encoded_style_payload() -> None:
+    payload = {
+        "prefix": "Repository: ",
+        "url": "https://example.com/project/tree/main",
+        "suffix": ".",
+        "backgroundColor": "#f1f1f1",
+        "borderColor": "#d8dee9",
+    }
+    encoded = base64.b64encode(json.dumps(payload).encode()).decode()
+    markdown = f'Before <PdfUrlCallout data="{encoded}" /> After'
+
+    search_text = _plain_search_text(markdown)
+
+    assert search_text == ("Before Repository: https://example.com/project/tree/main. After")
+    assert encoded not in search_text
+    assert "backgroundColor" not in search_text

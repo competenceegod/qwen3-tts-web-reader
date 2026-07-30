@@ -21,7 +21,7 @@ from booksite.site.docusaurus import generate_docusaurus_site
 from booksite.utils.cache import CacheStore, atomic_write_text
 from booksite.validate.site import build_docusaurus, validate_content
 
-_CACHE_SCHEMA_VERSION = "native-book-ir-v4"
+_CACHE_SCHEMA_VERSION = "native-book-ir-v6"
 _SITE_MANIFEST = ".booksite-site.json"
 _LEGACY_SITE_MARKERS = (
     "build",
@@ -104,18 +104,10 @@ def _validate_existing_site(target: Path, book: BookIR) -> None:
             manifest.get("book_id") != book.book_id
             or manifest.get("source_sha256") != book.source_sha256
         ):
-            raise RuntimeError(
-                f"Site directory belongs to a different source PDF: {target}"
-            )
+            raise RuntimeError(f"Site directory belongs to a different source PDF: {target}")
         return
 
-    legacy_owner = (
-        target
-        / "static"
-        / "assets"
-        / book.book_id
-        / ".booksite-generated"
-    )
+    legacy_owner = target / "static" / "assets" / book.book_id / ".booksite-generated"
     if legacy_owner.exists() and legacy_owner.read_text(encoding="utf-8").strip() == (
         book.source_sha256
     ):
@@ -164,9 +156,7 @@ class PipelineRunner:
     ) -> None:
         unsupported = config.unsupported_non_default_options()
         if unsupported:
-            raise ValueError(
-                "Unsupported non-default options: " + ", ".join(unsupported)
-            )
+            raise ValueError("Unsupported non-default options: " + ", ".join(unsupported))
         self.config = config
         self.workspace_root = Path(workspace_root)
         self.cache = CacheStore(self.workspace_root / "cache")
