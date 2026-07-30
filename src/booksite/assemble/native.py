@@ -19,6 +19,7 @@ from booksite.normalize.text import dehyphenate_line_breaks, normalize_unicode
 from booksite.quality.rules import NativeTextStatus
 
 _LIST_MARKER = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+_SHORT_CODE_DELIMITERS = re.compile(r"^[()[\]{},.:;]+$")
 _MONO_HINTS = ("mono", "courier", "code", "consol")
 
 
@@ -98,7 +99,9 @@ def _block_from_pdf(
         block_type = "title"
         heading_level = toc_titles[normalized]
         markdown = f"{'#' * heading_level} {_escape_mdx(text)}"
-    elif mono_chars / char_total >= 0.45 and len(text) >= 8:
+    elif mono_chars / char_total >= 0.45 and (
+        len(text) >= 8 or _SHORT_CODE_DELIMITERS.fullmatch(text)
+    ):
         block_type = "code"
         markdown = f"```text\n{text}\n```"
     elif max_size >= max(15, typical_font_size * 1.35):

@@ -54,6 +54,38 @@ def test_native_assembly_merges_adjacent_monospace_blocks(tmp_path: Path) -> Non
     assert "from pathlib import Path\nsource = Path('book.pdf')\nprint(source.name)" in markdown
 
 
+def test_native_assembly_keeps_short_monospace_delimiters_in_code(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "code-delimiters.pdf"
+    document = pymupdf.open()
+    page = document.new_page(width=500, height=600)
+    page.insert_text((30, 70), "Code Chapter", fontsize=22)
+    code_lines = [
+        "prompt = ChatPromptTemplate.from_messages(",
+        '    [{"type": "image_url"},',
+        "    }])]",
+        ")",
+        'prompt.invoke({"image_bytes_str": "test-url"})',
+    ]
+    for line_number, line in enumerate(code_lines):
+        page.insert_text(
+            (30, 130 + line_number * 15),
+            line,
+            fontsize=10,
+            fontname="cour",
+        )
+    document.set_toc([[1, "Code Chapter", 1]])
+    document.save(pdf_path)
+    document.close()
+
+    book = assemble_native_book(pdf_path, audit_pdf(pdf_path))
+    markdown = book.sections[0].markdown
+
+    assert markdown.count("```text") == 1
+    assert markdown.count("```") == 2
+    assert "\n}])]\n)\nprompt.invoke" in markdown
+    assert "&#125;" not in markdown
+
+
 def test_native_assembly_covers_pages_before_first_bookmark(tmp_path: Path) -> None:
     pdf_path = tmp_path / "front-matter.pdf"
     document = pymupdf.open()
