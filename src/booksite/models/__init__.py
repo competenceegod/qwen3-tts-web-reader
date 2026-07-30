@@ -1,6 +1,16 @@
 """Validated intermediate representation models."""
 
-from booksite.models.book_ir import AssetIR, BlockIR, BookIR, PageIR, SectionIR, WarningIR
+from booksite.models.book_ir import (
+    AssetIR,
+    BlockIR,
+    BookIR,
+    CodeLineIR,
+    CodeSpanIR,
+    CodeStyleIR,
+    PageIR,
+    SectionIR,
+    WarningIR,
+)
 from booksite.models.reports import AuditReport, PageAudit, TocEntry
 
 __all__ = [
@@ -8,6 +18,9 @@ __all__ = [
     "AuditReport",
     "BlockIR",
     "BookIR",
+    "CodeLineIR",
+    "CodeSpanIR",
+    "CodeStyleIR",
     "PageAudit",
     "PageIR",
     "SectionIR",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -8,7 +10,16 @@ from typing import Any
 
 import pymupdf
 
-from booksite.models.book_ir import BlockIR, BookIR, PageIR, SectionIR, WarningIR
+from booksite.models.book_ir import (
+    BlockIR,
+    BookIR,
+    CodeLineIR,
+    CodeSpanIR,
+    CodeStyleIR,
+    PageIR,
+    SectionIR,
+    WarningIR,
+)
 from booksite.models.reports import AuditReport, TocEntry
 from booksite.normalize.headers_footers import (
     MarginalLine,
@@ -98,6 +109,86 @@ def _escape_mdx(text: str) -> str:
     return _MARKDOWN_PUNCTUATION.sub(r"\\\1", html_safe)
 
 
+def _integer_color(value: object) -> str:
+    try:
+        color = int(value)
+    except (TypeError, ValueError):
+        color = 0
+    return f"#{max(0, min(color, 0xFFFFFF)):06x}"
+
+
+def _drawing_color(value: object, fallback: str) -> str:
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        return fallback
+    channels = [max(0, min(round(float(channel) * 255), 255)) for channel in value[:3]]
+    return f"#{channels[0]:02x}{channels[1]:02x}{channels[2]:02x}"
+
+
+def _code_lines(lines: list[dict[str, Any]]) -> list[CodeLineIR]:
+    styled_lines: list[CodeLineIR] = []
+    for line in lines:
+        spans = []
+        for span in line.get("spans", []):
+            text = str(span.get("text", ""))
+            if not text:
+                continue
+            flags = int(span.get("flags", 0))
+            font_family = str(span.get("font") or "monospace")
+            spans.append(
+                CodeSpanIR(
+                    text=text,
+                    color=_integer_color(span.get("color", 0)),
+                    font_family=font_family,
+                    font_size_pt=max(float(span.get("size", 9.0)), 0.1),
+                    bold=bool(flags & 16) or "bold" in font_family.casefold(),
+                    italic=bool(flags & 2) or "italic" in font_family.casefold(),
+                )
+            )
+        styled_lines.append(CodeLineIR(spans=spans))
+    return styled_lines
+
+
+def _code_style_for_bbox(
+    drawings: list[dict[str, Any]],
+    bbox: tuple[float, float, float, float],
+    font_size_pt: float,
+) -> CodeStyleIR:
+    block_rect = pymupdf.Rect(bbox)
+    center = (block_rect.x0 + block_rect.x1) / 2, (block_rect.y0 + block_rect.y1) / 2
+    surfaces: list[tuple[float, pymupdf.Rect, dict[str, Any]]] = []
+    for drawing in drawings:
+        if drawing.get("fill") is None or drawing.get("rect") is None:
+            continue
+        rect = pymupdf.Rect(drawing["rect"])
+        if rect.contains(center):
+            surfaces.append((rect.get_area(), rect, drawing))
+    if not surfaces:
+        return CodeStyleIR(
+            background_color="#f8f8f8",
+            border_color="#d8dee9",
+            font_size_pt=font_size_pt,
+        )
+
+    _, surface_rect, surface = min(surfaces, key=lambda item: item[0])
+    border_color = "#d8dee9"
+    for drawing in drawings:
+        if drawing.get("color") is None or drawing.get("rect") is None:
+            continue
+        line_rect = pymupdf.Rect(drawing["rect"])
+        same_vertical_extent = (
+            abs(line_rect.y0 - surface_rect.y0) <= 2
+            and abs(line_rect.y1 - surface_rect.y1) <= 2
+        )
+        if same_vertical_extent and abs(line_rect.x0 - surface_rect.x0) <= 4:
+            border_color = _drawing_color(drawing["color"], border_color)
+            break
+    return CodeStyleIR(
+        background_color=_drawing_color(surface.get("fill"), "#f8f8f8"),
+        border_color=border_color,
+        font_size_pt=font_size_pt,
+    )
+
+
 def _block_from_pdf(
     raw_block: dict[str, Any],
     page_index: int,
@@ -106,6 +197,7 @@ def _block_from_pdf(
     toc_titles: dict[str, int],
     typical_font_size: float,
     page_height: float,
+    code_style: CodeStyleIR | None = None,
 ) -> BlockIR | None:
     raw_lines = raw_block.get("lines", [])
     kept_lines: list[dict[str, Any]] = []
@@ -167,6 +259,20 @@ def _block_from_pdf(
         markdown = _escape_mdx(" ".join(joined.splitlines()))
 
     bbox = tuple(float(value) for value in raw_block["bbox"])
+    styled_code_lines: list[CodeLineIR] = []
+    if block_type == "code":
+        styled_code_lines = _code_lines(kept_lines)
+        code_sizes = [
+            span.font_size_pt
+            for line in styled_code_lines
+            for span in line.spans
+        ]
+        effective_size = median(code_sizes) if code_sizes else max(typical_font_size, 0.1)
+        code_style = (code_style or CodeStyleIR(
+            background_color="#f8f8f8",
+            border_color="#d8dee9",
+            font_size_pt=effective_size,
+        )).model_copy(update={"font_size_pt": effective_size})
     return BlockIR(
         block_id=f"p{page_index + 1:04d}-b{order + 1:03d}",
         page_index=page_index,
@@ -175,6 +281,8 @@ def _block_from_pdf(
         bbox=bbox,
         text=block_text,
         markdown=markdown,
+        code_lines=styled_code_lines,
+        code_style=code_style if block_type == "code" else None,
         heading_level=heading_level,
         source_engine="native",
         confidence=1.0,
@@ -188,6 +296,7 @@ def _page_ir(
     entries: list[TocEntry],
 ) -> PageIR:
     text_dict = page.get_text("dict", sort=True)
+    drawings = page.get_drawings()
     sizes = [
         float(span.get("size", 0))
         for block in text_dict.get("blocks", [])
@@ -209,6 +318,11 @@ def _page_ir(
             toc_titles,
             typical_size,
             page.rect.height,
+            _code_style_for_bbox(
+                drawings,
+                tuple(float(value) for value in raw_block["bbox"]),
+                typical_size,
+            ),
         )
         if block is not None:
             blocks.append(block)
@@ -329,6 +443,44 @@ def _indent_list(markdown: str, base_x: float | None, block: BlockIR) -> str:
     return "\n".join(f"{prefix}{line}" if line else line for line in markdown.splitlines())
 
 
+def _styled_code_markdown(blocks: list[BlockIR]) -> str:
+    first_style = blocks[0].code_style
+    if first_style is None:
+        raise ValueError("styled code blocks require code_style")
+    lines: list[list[dict[str, object]]] = []
+    previous: BlockIR | None = None
+    for block in blocks:
+        if previous is not None and _code_blocks_have_blank_line(previous, block):
+            lines.append([])
+        lines.extend(
+            [
+                [
+                    {
+                        "text": span.text,
+                        "color": span.color,
+                        "fontFamily": span.font_family,
+                        "fontSizePt": span.font_size_pt,
+                        "bold": span.bold,
+                        "italic": span.italic,
+                    }
+                    for span in line.spans
+                ]
+                for line in block.code_lines
+            ]
+        )
+        previous = block
+    payload = {
+        "backgroundColor": first_style.background_color,
+        "borderColor": first_style.border_color,
+        "fontSizePt": first_style.font_size_pt,
+        "lines": lines,
+    }
+    encoded = base64.b64encode(
+        json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode()
+    ).decode()
+    return f'<PdfCodeBlock data="{encoded}" />'
+
+
 def _section_markdown(
     section: TocEntry,
     pages: list[PageIR],
@@ -338,6 +490,13 @@ def _section_markdown(
     previous_block_type: str | None = None
     previous_block: BlockIR | None = None
     list_base_x: float | None = None
+    pending_styled_code: list[BlockIR] = []
+
+    def flush_styled_code() -> None:
+        if pending_styled_code:
+            parts.append(_styled_code_markdown(pending_styled_code))
+            pending_styled_code.clear()
+
     source_pages = range(section.start_page, (section.end_page or section.start_page) + 1)
     for page_number in source_pages:
         page = pages[page_number - 1]
@@ -357,12 +516,30 @@ def _section_markdown(
         emitted_entry_titles: set[str] = set()
         for normalized_title, entry in entries_by_title.items():
             if normalized_title not in block_titles:
+                flush_styled_code()
                 parts.append(f"{'#' * min(entry.level, 6)} {_escape_mdx(entry.title)}")
                 emitted_entry_titles.add(normalized_title)
                 previous_block_type = "title"
                 previous_block = None
         section_title = " ".join(section.title.casefold().split())
         for block in page.blocks:
+            styled_code = (
+                block.type == "code"
+                and bool(block.code_lines)
+                and block.code_style is not None
+            )
+            if styled_code:
+                if (
+                    pending_styled_code
+                    and pending_styled_code[-1].code_style != block.code_style
+                ):
+                    flush_styled_code()
+                pending_styled_code.append(block)
+                previous_block_type = "code"
+                previous_block = block
+                list_base_x = None
+                continue
+            flush_styled_code()
             normalized = " ".join((block.text or "").casefold().split())
             partial_section_title = (
                 block.type == "title" and len(normalized) >= 8 and normalized in section_title
@@ -415,6 +592,7 @@ def _section_markdown(
                 previous_block_type = block.type
                 previous_block = block
                 list_base_x = None
+    flush_styled_code()
     end_page = section.end_page or section.start_page
     page_label = (
         f"PDF page {section.start_page}"

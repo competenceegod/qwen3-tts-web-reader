@@ -21,7 +21,7 @@ from booksite.site.docusaurus import generate_docusaurus_site
 from booksite.utils.cache import CacheStore, atomic_write_text
 from booksite.validate.site import build_docusaurus, validate_content
 
-_CACHE_SCHEMA_VERSION = "native-book-ir-v3"
+_CACHE_SCHEMA_VERSION = "native-book-ir-v4"
 _SITE_MANIFEST = ".booksite-site.json"
 _LEGACY_SITE_MARKERS = (
     "build",

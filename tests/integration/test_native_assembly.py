@@ -1,9 +1,16 @@
+import base64
+import json
 from pathlib import Path
 
 import pymupdf
 
 from booksite.assemble.native import assemble_native_book
 from booksite.pdf.audit import audit_pdf
+
+
+def _styled_code_payload(markdown: str) -> dict[str, object]:
+    encoded = markdown.split('<PdfCodeBlock data="', 1)[1].split('" />', 1)[0]
+    return json.loads(base64.b64decode(encoded))
 
 
 def test_native_assembly_uses_bookmarks_and_removes_repeated_marginals(tmp_path: Path) -> None:
@@ -48,10 +55,14 @@ def test_native_assembly_merges_adjacent_monospace_blocks(tmp_path: Path) -> Non
 
     book = assemble_native_book(pdf_path, audit_pdf(pdf_path))
     markdown = book.sections[0].markdown
+    payload = _styled_code_payload(markdown)
+    code_text = "\n".join(
+        "".join(span["text"] for span in line)
+        for line in payload["lines"]
+    )
 
-    assert markdown.count("```text") == 1
-    assert markdown.count("```") == 2
-    assert "from pathlib import Path\nsource = Path('book.pdf')\nprint(source.name)" in markdown
+    assert markdown.count('<PdfCodeBlock data="') == 1
+    assert "from pathlib import Path\nsource = Path('book.pdf')\nprint(source.name)" in code_text
 
 
 def test_native_assembly_keeps_short_monospace_delimiters_in_code(tmp_path: Path) -> None:
@@ -79,11 +90,15 @@ def test_native_assembly_keeps_short_monospace_delimiters_in_code(tmp_path: Path
 
     book = assemble_native_book(pdf_path, audit_pdf(pdf_path))
     markdown = book.sections[0].markdown
+    payload = _styled_code_payload(markdown)
+    code_text = "\n".join(
+        "".join(span["text"] for span in line)
+        for line in payload["lines"]
+    )
 
-    assert markdown.count("```text") == 1
-    assert markdown.count("```") == 2
-    assert "\n    }])]\n)\nprompt.invoke" in markdown
-    assert "&#125;" not in markdown
+    assert markdown.count('<PdfCodeBlock data="') == 1
+    assert "\n    }])]\n)\nprompt.invoke" in code_text
+    assert "&#125;" not in code_text
 
 
 def test_native_assembly_covers_pages_before_first_bookmark(tmp_path: Path) -> None:

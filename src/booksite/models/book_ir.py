@@ -26,6 +26,25 @@ BlockType = Literal[
 ]
 
 
+class CodeSpanIR(BaseModel):
+    text: str
+    color: str = Field(pattern=r"^#[0-9a-f]{6}$")
+    font_family: str = "monospace"
+    font_size_pt: float = Field(gt=0)
+    bold: bool = False
+    italic: bool = False
+
+
+class CodeLineIR(BaseModel):
+    spans: list[CodeSpanIR] = Field(default_factory=list)
+
+
+class CodeStyleIR(BaseModel):
+    background_color: str = Field(pattern=r"^#[0-9a-f]{6}$")
+    border_color: str = Field(pattern=r"^#[0-9a-f]{6}$")
+    font_size_pt: float = Field(gt=0)
+
+
 class BlockIR(BaseModel):
     block_id: str
     page_index: int = Field(ge=0)
@@ -36,6 +55,8 @@ class BlockIR(BaseModel):
     markdown: str | None = None
     latex: str | None = None
     html: str | None = None
+    code_lines: list[CodeLineIR] = Field(default_factory=list)
+    code_style: CodeStyleIR | None = None
     heading_level: int | None = Field(default=None, ge=1, le=6)
     asset_path: str | None = None
     caption: str | None = None
