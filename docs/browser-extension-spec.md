@@ -152,6 +152,10 @@ queues are ignored or rejected.
   starts, not while it is only being prefetched.
 - Space pauses and resumes an active continuous session unless focus is in an
   editable or interactive control. Escape stops playback.
+- A paused session remains recoverable after Chrome discards the silent
+  offscreen audio document. Resuming recreates the document when necessary and
+  restarts at the current sentence before continuing through the remaining
+  in-memory queue; selected page text is not persisted to disk.
 - Audio uses the shared gapless timeline, startup buffer, bounded sentence
   prefetch, sentence crossfade, and cleanup behavior of the book reader.
 - The extension can fetch only `http://127.0.0.1:8765/*` and

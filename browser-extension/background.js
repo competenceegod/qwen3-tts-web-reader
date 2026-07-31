@@ -35,7 +35,7 @@ function validSessionId(value) {
   return typeof value === 'string' && SESSION_ID.test(value);
 }
 
-function validStart(message) {
+function validPlaybackRequest(message, {recovery = false} = {}) {
   if (
     !Array.isArray(message.items)
     || !ALLOWED_SPEEDS.has(message.speed)
@@ -43,7 +43,18 @@ function validStart(message) {
   ) {
     return false;
   }
+  if (
+    recovery
+    && (
+      !Number.isInteger(message.indexOffset)
+      || message.indexOffset < 0
+      || message.indexOffset >= MAX_ITEMS
+    )
+  ) {
+    return false;
+  }
   if (message.items.length === 0 || message.items.length > MAX_ITEMS) return false;
+  if (recovery && message.indexOffset + message.items.length > MAX_ITEMS) return false;
   let total = 0;
   for (const item of message.items) {
     if (
@@ -63,7 +74,10 @@ function validStart(message) {
 function validControl(message) {
   if (!message || message.target !== 'background') return false;
   if (!CONTROL_TYPES.has(message.type) || !validSessionId(message.sessionId)) return false;
-  if (message.type === 'START_READING') return validStart(message);
+  if (message.type === 'START_READING') return validPlaybackRequest(message);
+  if (message.type === 'RESUME_READING') {
+    return validPlaybackRequest(message, {recovery: true});
+  }
   if (message.type === 'SET_SPEED') return ALLOWED_SPEEDS.has(message.speed);
   return true;
 }

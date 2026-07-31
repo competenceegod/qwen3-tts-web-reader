@@ -6,6 +6,7 @@ const BUFFER_CAPACITY_RESERVE_SECONDS = 1;
 const REBUFFER_SECONDS = 0.12;
 const SENTENCE_CROSSFADE_SECONDS = 0.008;
 const START_FADE_SECONDS = 0.006;
+const BUSY_RETRY_DELAYS_MS = Object.freeze([150, 300, 600, 1000, 1500, 2000]);
 const ALLOWED_SPEEDS = new Set([0.75, 1, 1.25, 1.5]);
 
 function abortError() {
@@ -44,6 +45,67 @@ async function waitUntilAudioTime(audioContext, targetTime, signal) {
   while (audioContext.currentTime + 0.015 < targetTime) {
     const remainingMilliseconds = (targetTime - audioContext.currentTime) * 1000;
     await abortableDelay(Math.min(50, Math.max(10, remainingMilliseconds)), signal);
+  }
+}
+
+async function requestStreamUrl(
+  text,
+  {
+    request = fetch,
+    signal,
+  } = {},
+) {
+  const response = await request(`${SERVICE_ORIGIN}/api/tts`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text}),
+    signal,
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `本地语音服务返回 ${response.status}`);
+  }
+  const payload = await response.json();
+  if (
+    typeof payload.streamUrl !== 'string'
+    || !payload.streamUrl.startsWith('/api/tts/stream/')
+  ) {
+    throw new Error('本地语音服务返回了无效的流地址。');
+  }
+  return payload.streamUrl;
+}
+
+export async function requestAudioStream(
+  text,
+  {
+    request = fetch,
+    retryDelays = BUSY_RETRY_DELAYS_MS,
+    signal,
+  } = {},
+) {
+  const requestSignal = signal ?? new AbortController().signal;
+  let attempt = 0;
+  while (true) {
+    const streamUrl = await requestStreamUrl(
+      text,
+      {request, signal: requestSignal},
+    );
+    const response = await request(
+      `${SERVICE_ORIGIN}${streamUrl}`,
+      {signal: requestSignal},
+    );
+    if (response.status === 409 && attempt < retryDelays.length) {
+      await response.arrayBuffer().catch(() => {});
+      await abortableDelay(retryDelays[attempt], requestSignal);
+      attempt += 1;
+      continue;
+    }
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `本地音频流返回 ${response.status}`);
+    }
+    if (!response.body) throw new Error('本地音频流没有返回内容。');
+    return response;
   }
 }
 
@@ -100,29 +162,10 @@ export class StreamingTtsPlayer {
     text,
     timeline,
   }) {
-    const response = await fetch(`${SERVICE_ORIGIN}/api/tts`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text}),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || `本地语音服务返回 ${response.status}`);
-    }
-    const payload = await response.json();
-    if (
-      typeof payload.streamUrl !== 'string'
-      || !payload.streamUrl.startsWith('/api/tts/stream/')
-    ) {
-      throw new Error('本地语音服务返回了无效的流地址。');
-    }
-    const streamResponse = await fetch(`${SERVICE_ORIGIN}${payload.streamUrl}`, {
-      signal: controller.signal,
-    });
-    if (!streamResponse.ok || !streamResponse.body) {
-      throw new Error(`本地音频流返回 ${streamResponse.status}`);
-    }
+    const streamResponse = await requestAudioStream(
+      text,
+      {signal: controller.signal},
+    );
 
     const localSources = new Set();
     let resolvePlayback;
@@ -263,7 +306,10 @@ export class StreamingTtsPlayer {
   }
 
   async resume() {
-    if (this.audioContext?.state === 'suspended') await this.audioContext.resume();
+    const context = this.audioContext;
+    if (!context || context.state === 'closed') return false;
+    if (context.state !== 'running') await context.resume();
+    return context.state === 'running';
   }
 
   setSpeed(speed) {

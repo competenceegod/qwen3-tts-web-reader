@@ -130,6 +130,213 @@ if (oversized.some((item) => item.text.length > 2000)) {{
     assert result.returncode == 0, result.stderr
 
 
+def test_offscreen_restarts_current_sentence_after_audio_document_was_discarded() -> None:
+    offscreen_script = EXTENSION_DIR / "offscreen.js"
+    runner = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync({json.dumps(str(offscreen_script))}, 'utf8').replace(
+  "import {{StreamingTtsPlayer}} from './audio-engine.js';",
+  `
+  class StreamingTtsPlayer {{
+    constructor() {{
+      this.startCalls = [];
+      globalThis.testPlayer = this;
+    }}
+    async start(items, options) {{
+      this.startCalls.push({{items, options}});
+      options.onSentenceStarted(0);
+      return new Promise(() => {{}});
+    }}
+    async pause() {{}}
+    async resume() {{ return false; }}
+    setSpeed() {{}}
+    stop() {{}}
+  }}
+  `,
+);
+const listeners = [];
+const emitted = [];
+const context = {{
+  chrome: {{
+    runtime: {{
+      onMessage: {{addListener(listener) {{ listeners.push(listener); }}}},
+      sendMessage(message) {{
+        emitted.push(message);
+        return Promise.resolve();
+      }},
+    }},
+  }},
+}};
+vm.createContext(context);
+vm.runInContext(source, context);
+
+listeners[0]({{
+  target: 'offscreen',
+  type: 'RESUME_READING',
+  sessionId: 'long-pause-session',
+  tabId: 7,
+  continuous: true,
+  items: [{{text: 'Current sentence.'}}, {{text: 'Next sentence.'}}],
+  indexOffset: 4,
+  speed: 1,
+}});
+
+setImmediate(() => {{
+  if (context.testPlayer.startCalls.length !== 1) {{
+    throw new Error('discarded audio document did not rebuild playback');
+  }}
+  const started = emitted.find((message) => message.event === 'SENTENCE_STARTED');
+  if (!started || started.index !== 4) {{
+    throw new Error(`expected restored sentence index 4, got ${{started?.index}}`);
+  }}
+}});
+"""
+    result = subprocess.run(
+        ["node", "--eval", runner],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_background_requires_a_bounded_queue_for_long_pause_recovery() -> None:
+    background_script = EXTENSION_DIR / "background.js"
+    runner = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const listeners = [];
+const forwarded = [];
+const context = {{
+  chrome: {{
+    offscreen: {{
+      hasDocument() {{ return Promise.resolve(true); }},
+      createDocument() {{ return Promise.resolve(); }},
+    }},
+    runtime: {{
+      id: 'test-extension',
+      getURL(path) {{ return `chrome-extension://test-extension/${{path}}`; }},
+      onMessage: {{addListener(listener) {{ listeners.push(listener); }}}},
+      sendMessage(message) {{
+        forwarded.push(message);
+        return Promise.resolve();
+      }},
+    }},
+    tabs: {{sendMessage() {{ return Promise.resolve(); }}}},
+  }},
+}};
+vm.createContext(context);
+vm.runInContext(
+  fs.readFileSync({json.dumps(str(background_script))}, 'utf8'),
+  context,
+);
+
+const sender = {{tab: {{id: 12}}}};
+const invalidAccepted = listeners[0](
+  {{
+    target: 'background',
+    type: 'RESUME_READING',
+    sessionId: 'long-pause-session',
+  }},
+  sender,
+  () => {{}},
+);
+if (invalidAccepted !== false) {{
+  throw new Error('resume without a recovery queue was accepted');
+}}
+
+const validAccepted = listeners[0](
+  {{
+    target: 'background',
+    type: 'RESUME_READING',
+    sessionId: 'long-pause-session',
+    continuous: true,
+    items: [{{text: 'Current sentence.'}}, {{text: 'Next sentence.'}}],
+    indexOffset: 4,
+    speed: 1,
+  }},
+  sender,
+  () => {{}},
+);
+if (validAccepted !== true) {{
+  throw new Error('bounded long-pause recovery queue was rejected');
+}}
+
+setImmediate(() => {{
+  if (forwarded.length !== 1 || forwarded[0].target !== 'offscreen') {{
+    throw new Error('valid recovery message was not forwarded once');
+  }}
+}});
+"""
+    result = subprocess.run(
+        ["node", "--eval", runner],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_audio_stream_retries_when_recovery_races_a_busy_model() -> None:
+    audio_engine = EXTENSION_DIR / "audio-engine.js"
+    runner = f"""
+const {{pathToFileURL}} = require('node:url');
+
+(async () => {{
+  const moduleUrl = pathToFileURL({json.dumps(str(audio_engine))});
+  moduleUrl.searchParams.set('test', String(Date.now()));
+  const engine = await import(moduleUrl.href);
+  let requestCount = 0;
+  const streamResponse = await engine.requestAudioStream('Resume this sentence.', {{
+    request: async () => {{
+      requestCount += 1;
+      if (requestCount === 1) {{
+        return new Response(
+          JSON.stringify({{streamUrl: '/api/tts/stream/first-attempt'}}),
+          {{status: 201, headers: {{'Content-Type': 'application/json'}}}},
+        );
+      }}
+      if (requestCount === 2) {{
+        return new Response(
+          JSON.stringify({{error: 'busy'}}),
+          {{status: 409, headers: {{'Content-Type': 'application/json'}}}},
+        );
+      }}
+      if (requestCount === 3) {{
+        return new Response(
+          JSON.stringify({{streamUrl: '/api/tts/stream/recovered'}}),
+          {{status: 201, headers: {{'Content-Type': 'application/json'}}}},
+        );
+      }}
+      return new Response(new Uint8Array([82, 73, 70, 70]), {{status: 200}});
+    }},
+    retryDelays: [0],
+    signal: new AbortController().signal,
+  }});
+  if (requestCount !== 4) {{
+    throw new Error(`expected 4 requests, got ${{requestCount}}`);
+  }}
+  if (streamResponse.status !== 200 || !streamResponse.body) {{
+    throw new Error('recovered stream response was not returned');
+  }}
+}})().catch((error) => {{
+  console.error(error);
+  process.exitCode = 1;
+}});
+"""
+    result = subprocess.run(
+        ["node", "--eval", runner],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_tts_only_mode_does_not_require_a_docusaurus_build(tmp_path: Path) -> None:
     engine = _FakeExtensionEngine()
     server = BooksiteServer(("127.0.0.1", 0), make_handler(None, engine))

@@ -160,6 +160,7 @@
   let selectedDetails = null;
   let session = null;
   let currentRange = null;
+  let currentIndex = 0;
 
   function makeButton(text, label) {
     const button = document.createElement('button');
@@ -209,6 +210,25 @@
     });
   }
 
+  function recoveryDetails() {
+    const safeIndex = Math.max(0, Math.min(currentIndex, session.queue.length - 1));
+    return {
+      continuous: session.continuous,
+      indexOffset: safeIndex,
+      items: session.queue.slice(safeIndex).map(({text}) => ({text})),
+      speed: Number(speedSelect.value),
+    };
+  }
+
+  function togglePause() {
+    if (!session) return;
+    if (session.state === 'paused') {
+      void sendControl('RESUME_READING', recoveryDetails());
+    } else {
+      void sendControl('PAUSE_READING');
+    }
+  }
+
   async function startReading(queue, continuous) {
     if (!queue.length) {
       hideSelectionBar();
@@ -218,6 +238,7 @@
     if (session) await sendControl('STOP_READING').catch(() => {});
     QwenPageReader.clearHighlight(fallbackLayer);
     currentRange = null;
+    currentIndex = 0;
     session = {
       id: newSessionId(),
       queue,
@@ -247,6 +268,7 @@
     if (session && ACTIVE_STATES.has(session.state)) void sendControl('STOP_READING');
     if (session) session.state = 'stopped';
     currentRange = null;
+    currentIndex = 0;
     QwenPageReader.clearHighlight(fallbackLayer);
     showPlayer('stopped', '已停止');
   }
@@ -284,11 +306,7 @@
     }
   });
   selectionBar.addEventListener('mousedown', (event) => event.preventDefault());
-  pauseButton.addEventListener('click', () => {
-    if (!session) return;
-    const nextType = session.state === 'paused' ? 'RESUME_READING' : 'PAUSE_READING';
-    void sendControl(nextType);
-  });
+  pauseButton.addEventListener('click', togglePause);
   stopButton.addEventListener('click', stopReading);
   closeButton.addEventListener('click', () => {
     player.classList.remove('visible');
@@ -313,8 +331,7 @@
       && !hasInteractiveTarget
     ) {
       event.preventDefault();
-      const nextType = session.state === 'paused' ? 'RESUME_READING' : 'PAUSE_READING';
-      void sendControl(nextType);
+      togglePause();
     }
     if (event.key === 'Escape' && session && ACTIVE_STATES.has(session.state)) {
       stopReading();
@@ -347,6 +364,7 @@
       && message.index >= 0
       && message.index < session.queue.length
     ) {
+      currentIndex = message.index;
       currentRange = session.queue[message.index].range;
       QwenPageReader.highlightAndCenter(currentRange, fallbackLayer);
     } else if (message.event === 'STATE_CHANGED') {
@@ -356,11 +374,13 @@
       showPlayer(message.state, message.message.slice(0, 240));
       if (message.state === 'stopped') {
         currentRange = null;
+        currentIndex = 0;
         QwenPageReader.clearHighlight(fallbackLayer);
       }
     } else if (message.event === 'READING_FINISHED') {
       session.state = 'stopped';
       currentRange = null;
+      currentIndex = 0;
       QwenPageReader.clearHighlight(fallbackLayer);
       showPlayer('stopped', session.continuous ? '连续朗读完成' : '朗读完成');
     } else if (
@@ -369,6 +389,7 @@
     ) {
       session.state = 'error';
       currentRange = null;
+      currentIndex = 0;
       QwenPageReader.clearHighlight(fallbackLayer);
       showPlayer('error', message.message.slice(0, 240));
     }
