@@ -143,12 +143,19 @@ def test_audio_to_pcm16_bytes_clips_samples_without_wav_header() -> None:
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("short", 256),
+        ("short", 42),
         ("中" * 100, 800),
         ("x" * 2_000, 4_096),
+        (
+            "Without parallel execution, you must accept slow sequential processing, "
+            "implement complex threading or async logic manually, risk inconsistent "
+            "state management across threads, and handle thread safety and "
+            "synchronization issues.",
+            322,
+        ),
     ],
 )
-def test_generation_token_limit_bounds_runaway_audio(text: str, expected: int) -> None:
+def test_generation_token_limit_matches_spoken_content(text: str, expected: int) -> None:
     assert generation_token_limit(text) == expected
 
 

@@ -24,6 +24,13 @@ The extension must recover from a temporarily unavailable local service, keep
 continuous playback resource usage bounded, and resume after a pause longer
 than Chrome's 30-second offscreen-audio lifetime.
 
+The long-English-sentence reliability revision must also prevent a completed
+sentence from holding the queue open while the model generates an excessive
+audio tail. English generation limits are estimated from spoken word count,
+while CJK text retains a character-based allowance. The exact Temporal
+"Without parallel execution..." sentence must finish its stream and advance
+to the following "Solution" heading without manual intervention.
+
 ## Tech stack
 
 - Chrome Extension Manifest V3
@@ -123,6 +130,9 @@ queues are ignored or rejected.
 - Reliability tests inject a refused network request followed by recovery,
   hold Web Audio's clock still to prove stream backpressure, and verify that an
   unexpected local-service exit is restarted by the launcher.
+- Token-budget tests cover long natural English, CJK text, and pathological
+  unbroken input so English prose cannot inherit an audio budget proportional
+  to every character.
 - A browser acceptance run pauses continuous reading for more than 30 seconds,
   then resumes from the current sentence and continues without a raw Fetch
   exception.
@@ -143,6 +153,9 @@ queues are ignored or rejected.
   backoff; convert exhausted Fetch failures into actionable Chinese guidance.
 - Apply response-stream backpressure whenever scheduled audio reaches the
   buffer-ahead limit, including while playback is paused.
+- Bound English speech generation by lexical word count plus a fixed ending
+  allowance; retain character-based sizing for CJK and unusually long
+  unbroken tokens.
 
 ### Ask first
 
@@ -191,6 +204,10 @@ queues are ignored or rejected.
 - A transient connection refusal or HTTP 409 is retried without displaying
   `Failed to fetch`. After the bounded retry budget is exhausted, the UI shows
   how to start the local Qwen service.
+- The reported Temporal sentence receives a generation budget below 400 audio
+  tokens instead of 1,824, and the following one-word "Solution" heading is
+  not padded to a 128-token minimum. Both streams close and continuous reading
+  advances without a generated silent tail.
 - The extension can fetch only `http://127.0.0.1:8765/*` and
   `http://localhost:8765/*`.
 - The standalone service works without `build/index.html` and still rejects

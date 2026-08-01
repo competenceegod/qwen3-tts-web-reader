@@ -9,6 +9,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import secrets
 import struct
 import sys
@@ -33,6 +34,10 @@ REQUIRED_MODEL_FILES = (
 STREAMING_INTERVAL_SECONDS = 0.5
 STREAM_SESSION_TTL_SECONDS = 60
 MAX_STREAM_SESSIONS = 8
+LATIN_WORD_PATTERN = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)*")
+CJK_CHARACTER_PATTERN = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]"
+)
 
 
 class RequestError(ValueError):
@@ -119,9 +124,19 @@ def parse_tts_request(body: bytes, content_type: str) -> str:
 
 
 def generation_token_limit(text: str) -> int:
-    """Bound audio generation while leaving room for slower-spoken CJK text."""
+    """Bound audio generation using units that approximate spoken duration."""
 
-    return min(4_096, max(256, len(text) * 8))
+    latin_words = LATIN_WORD_PATTERN.findall(text)
+    cjk_characters = len(CJK_CHARACTER_PATTERN.findall(text))
+    longest_latin_word = max(map(len, latin_words), default=0)
+    if cjk_characters:
+        estimate = cjk_characters * 8 + len(latin_words) * 10
+    elif longest_latin_word > 32:
+        # Preserve a conservative budget for identifiers or unbroken synthetic input.
+        estimate = len(text) * 8
+    else:
+        estimate = 32 + len(latin_words) * 10
+    return min(4_096, max(32, estimate))
 
 
 def _finite_pcm_sample(value: float) -> int:
