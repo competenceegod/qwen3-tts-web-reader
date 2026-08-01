@@ -31,6 +31,13 @@ while CJK text retains a character-based allowance. The exact Temporal
 "Without parallel execution..." sentence must finish its stream and advance
 to the following "Solution" heading without manual intervention.
 
+The low-energy-output revision must prevent model failures from becoming
+audible hum or static. A generation attempt that produces one continuous
+second of low-energy PCM before any speech is treated as failed, discarded,
+and retried once with commas removed from the spoken copy. Low-energy bytes
+from a failed attempt must never reach the browser. The source page text,
+highlight ranges, and visible content remain unchanged.
+
 ## Tech stack
 
 - Chrome Extension Manifest V3
@@ -133,6 +140,9 @@ queues are ignored or rejected.
 - Token-budget tests cover long natural English, CJK text, and pathological
   unbroken input so English prose cannot inherit an audio budget proportional
   to every character.
+- Engine tests inject deterministic low-energy PCM, verify that it is never
+  returned, and verify one punctuation-simplified retry before a valid speech
+  chunk is streamed.
 - A browser acceptance run pauses continuous reading for more than 30 seconds,
   then resumes from the current sentence and continues without a raw Fetch
   exception.
@@ -156,6 +166,9 @@ queues are ignored or rejected.
 - Bound English speech generation by lexical word count plus a fixed ending
   allowance; retain character-based sizing for CJK and unusually long
   unbroken tokens.
+- Detect sustained low-energy output before streaming it, retry once with a
+  minimally simplified spoken copy, and fail cleanly if neither attempt
+  contains speech.
 
 ### Ask first
 
@@ -208,6 +221,9 @@ queues are ignored or rejected.
   tokens instead of 1,824, and the following one-word "Solution" heading is
   not padded to a 128-token minimum. Both streams close and continuous reading
   advances without a generated silent tail.
+- On the ROS chapter page, `In this chapter, we will discuss the following
+  important topics:` must produce speech instead of the measured 10.56-second
+  low-energy noise stream, then advance into the topic list.
 - The extension can fetch only `http://127.0.0.1:8765/*` and
   `http://localhost:8765/*`.
 - The standalone service works without `build/index.html` and still rejects

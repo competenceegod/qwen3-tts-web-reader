@@ -201,6 +201,48 @@ def test_tts_engine_requests_small_streaming_chunks() -> None:
     assert model.calls[0]["streaming_interval"] == 0.5
 
 
+class _AudioResult:
+    sample_rate = 24_000
+
+    def __init__(self, audio: list[float]) -> None:
+        self.audio = audio
+
+
+class _QuietThenSpeechModel:
+    sample_rate = 24_000
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def generate(self, text: str, **options: object):
+        del options
+        self.texts.append(text)
+        if "," in text:
+            yield _AudioResult([0.002] * 12_000)
+            yield _AudioResult([0.002] * 12_000)
+            return
+        yield _AudioResult([0.25, -0.25] * 6_000)
+
+
+def test_tts_engine_discards_quiet_failure_and_retries_without_commas() -> None:
+    engine = TtsEngine()
+    model = _QuietThenSpeechModel()
+    engine._model = model
+    engine.reference_audio = None
+
+    chunks = list(
+        engine.stream_pcm(
+            "In this chapter, we will discuss the following important topics:"
+        )
+    )
+
+    assert model.texts == [
+        "In this chapter, we will discuss the following important topics:",
+        "In this chapter we will discuss the following important topics:",
+    ]
+    assert chunks == [audio_to_pcm16_bytes([0.25, -0.25] * 6_000)]
+
+
 def test_tts_engine_warms_model_with_a_short_stream() -> None:
     engine = TtsEngine()
     model = _FakeModel()

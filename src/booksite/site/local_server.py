@@ -34,6 +34,8 @@ REQUIRED_MODEL_FILES = (
 STREAMING_INTERVAL_SECONDS = 0.5
 STREAM_SESSION_TTL_SECONDS = 60
 MAX_STREAM_SESSIONS = 8
+LOW_ENERGY_FAILURE_SECONDS = 1.0
+LOW_ENERGY_RMS_THRESHOLD = 0.01
 LATIN_WORD_PATTERN = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)*")
 CJK_CHARACTER_PATTERN = re.compile(
     r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]"
@@ -198,6 +200,23 @@ def _flatten_audio(values: object) -> Iterable[float]:
     raise RuntimeError("语音模型返回了无法识别的音频格式。")
 
 
+def _audio_rms(samples: Sequence[float]) -> float:
+    if not samples:
+        return 0.0
+    square_sum = 0.0
+    for value in samples:
+        sample = float(value)
+        if math.isfinite(sample):
+            square_sum += sample * sample
+    return math.sqrt(square_sum / len(samples))
+
+
+def _spoken_text_candidates(text: str) -> tuple[str, ...]:
+    simplified = re.sub(r",\s*", " ", text)
+    simplified = re.sub(r"\s+", " ", simplified).strip()
+    return (text,) if simplified == text else (text, simplified)
+
+
 class TtsSessionStore:
     """Small one-time store that keeps selected text out of stream URLs."""
 
@@ -307,12 +326,34 @@ class TtsEngine:
             raise RequestError(409, "正在生成上一段语音，请稍后再试。")
         try:
             model = self._load_model()
-            emitted = False
-            for result in model.generate(text, **self._generation_options(text)):
-                emitted = True
-                yield audio_to_pcm16_bytes(_flatten_audio(result.audio))
-            if not emitted:
-                raise RuntimeError("语音模型没有返回音频。")
+            for candidate in _spoken_text_candidates(text):
+                emitted = False
+                quiet_chunks: list[bytes] = []
+                quiet_seconds = 0.0
+                generation = model.generate(candidate, **self._generation_options(candidate))
+                try:
+                    for result in generation:
+                        samples = list(_flatten_audio(result.audio))
+                        if _audio_rms(samples) < LOW_ENERGY_RMS_THRESHOLD:
+                            quiet_chunks.append(audio_to_pcm16_bytes(samples))
+                            quiet_seconds += len(samples) / self.sample_rate
+                            if quiet_seconds >= LOW_ENERGY_FAILURE_SECONDS:
+                                break
+                            continue
+                        for chunk in quiet_chunks:
+                            emitted = True
+                            yield chunk
+                        quiet_chunks.clear()
+                        quiet_seconds = 0.0
+                        emitted = True
+                        yield audio_to_pcm16_bytes(samples)
+                finally:
+                    close_generation = getattr(generation, "close", None)
+                    if close_generation is not None:
+                        close_generation()
+                if emitted:
+                    return
+            raise RuntimeError("语音模型没有返回有效语音。")
         finally:
             self._lock.release()
 
