@@ -285,7 +285,65 @@ export default {
 
 
 def _preview_server_py() -> str:
-    return Path(__file__).with_name("local_server.py").read_text(encoding="utf-8")
+    return '''#!/usr/bin/env python3
+"""Serve this generated Docusaurus build over loopback HTTP."""
+
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import threading
+import webbrowser
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Preview a generated book site.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", default=8000, type=int)
+    parser.add_argument("--no-open", action="store_true")
+    args = parser.parse_args()
+    try:
+        if not ipaddress.ip_address(args.host).is_loopback:
+            raise ValueError
+    except ValueError as error:
+        raise SystemExit("--host 必须是本机回环地址。") from error
+
+    build_dir = Path(__file__).resolve().parent / "build"
+    if not (build_dir / "index.html").is_file():
+        raise SystemExit("未找到 build/index.html。请先执行 pnpm build。")
+
+    handler = lambda *handler_args, **kwargs: SimpleHTTPRequestHandler(
+        *handler_args,
+        directory=str(build_dir),
+        **kwargs,
+    )
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), handler)
+    except OSError as error:
+        raise SystemExit(
+            f"无法启动本地网站：{error}。可尝试 python3 serve-local.py --port 8001"
+        ) from error
+
+    url = f"http://{args.host}:{server.server_port}/"
+    print(f"本地网站：{url}", flush=True)
+    print("保持此窗口开启；按 Control-C 停止。", flush=True)
+    if not args.no_open:
+        opener = threading.Timer(0.2, webbrowser.open, args=(url,))
+        opener.daemon = True
+        opener.start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\\n本地网站已停止。")
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
+'''
 
 
 def _preview_launcher_sh() -> str:
@@ -293,12 +351,6 @@ def _preview_launcher_sh() -> str:
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-if command -v uv >/dev/null 2>&1; then
-  exec uv run --no-project --python 3.12 --with 'mlx-audio==0.4.5' \
-    python "$SCRIPT_DIR/serve-local.py"
-fi
-
-echo "提示：未找到 uv，将仅启动网站；Qwen3-TTS 朗读暂不可用。" >&2
 exec /usr/bin/env python3 "$SCRIPT_DIR/serve-local.py"
 """
 
@@ -315,793 +367,17 @@ macOS：
 2. 默认浏览器会自动打开本地网站。
 3. 阅读期间保持终端窗口开启；按 Control-C 停止。
 
-Qwen3-TTS 朗读：
-1. 启动脚本会复用 PDFgear 已下载的 Qwen3-TTS 模型，不会再复制模型。
-2. 第一次启动可能需要通过 uv 安装约 100 MB 的 MLX 运行库。
-3. 选择文字后，可以只朗读选中内容，或从选择位置连续朗读到当前文档末尾。
-4. 连续朗读会高亮并居中当前句；按空格键暂停或继续，也可停止和调速。
-5. 文字和语音只在本机处理，本地接口只接受 127.0.0.1/::1 请求。
-6. 若未安装 uv，网站仍可正常阅读，但朗读功能不可用。
+语音朗读：
+本网站不再内置语音模型或朗读接口。需要朗读时，请使用你已经安装的
+浏览器朗读扩展；生成的网站会像普通网页一样由该扩展处理。
 
 命令行：
-uv run --no-project --python 3.12 --with 'mlx-audio==0.4.5' python serve-local.py
+python3 serve-local.py
 
 开发者也可以运行：
 pnpm serve
 
 部署时请上传 build/ 目录中的全部内容，不要把 baseUrl 改成本机文件路径。
-"""
-
-
-def _reading_queue_js() -> str:
-    return """
-const MAX_TEXT_CHARACTERS = 2000;
-const HIGHLIGHT_NAME = 'booksite-tts-current';
-const BLOCK_SELECTOR = 'p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, figcaption';
-const SKIPPED_SELECTOR = [
-  'button',
-  'input',
-  'textarea',
-  'select',
-  'script',
-  'style',
-  '.hash-link',
-  '[aria-hidden="true"]',
-].join(', ');
-
-export function clearReadingHighlight() {
-  CSS.highlights?.delete(HIGHLIGHT_NAME);
-}
-
-export function selectionDetails() {
-  const selection = window.getSelection();
-  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
-  const text = selection.toString().replace(/\\s+/gu, ' ').trim();
-  if (!text || text.length > MAX_TEXT_CHARACTERS) return null;
-  const range = selection.getRangeAt(0);
-  const node = range.commonAncestorContainer;
-  const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-  if (!element?.closest('.theme-doc-markdown')) return null;
-  const rect = range.getBoundingClientRect();
-  if (!rect.width && !rect.height) return null;
-  return {
-    text,
-    range: range.cloneRange(),
-    top: Math.max(12, rect.top - 52),
-    left: Math.max(
-      12,
-      Math.min(window.innerWidth - 300, rect.left + rect.width / 2 - 142),
-    ),
-  };
-}
-
-function readableTextNodes(article) {
-  const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      if (!node.data.trim() || node.parentElement?.closest(SKIPPED_SELECTOR)) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
-  const nodes = [];
-  while (walker.nextNode()) nodes.push(walker.currentNode);
-  return nodes;
-}
-
-function readingDocument(article) {
-  const segments = [];
-  let text = '';
-  let previousBlock = null;
-  for (const node of readableTextNodes(article)) {
-    const block = node.parentElement?.closest(BLOCK_SELECTOR);
-    if (text) {
-      if (block !== previousBlock) text += '\\n';
-      else if (!/\\s$/u.test(text) && !/^\\s/u.test(node.data)) text += ' ';
-    }
-    const start = text.length;
-    text += node.data;
-    segments.push({node, start, end: text.length});
-    previousBlock = block;
-  }
-  return {text, segments};
-}
-
-function selectionStartOffset(range, segments) {
-  const exact = segments.find((segment) => segment.node === range.startContainer);
-  if (exact) {
-    return exact.start + Math.min(range.startOffset, exact.node.data.length);
-  }
-  const collapsed = range.cloneRange();
-  collapsed.collapse(true);
-  for (const segment of segments) {
-    const nodeRange = document.createRange();
-    nodeRange.selectNodeContents(segment.node);
-    if (collapsed.compareBoundaryPoints(Range.START_TO_END, nodeRange) <= 0) {
-      return segment.start;
-    }
-  }
-  return segments.at(-1)?.end ?? 0;
-}
-
-function sentenceBounds(text) {
-  if ('Segmenter' in Intl) {
-    const segmenter = new Intl.Segmenter(document.documentElement.lang || undefined, {
-      granularity: 'sentence',
-    });
-    return Array.from(segmenter.segment(text), ({index, segment}) => ({
-      start: index,
-      end: index + segment.length,
-    }));
-  }
-  const bounds = [];
-  const pattern = /[^.!?。！？\\n]+(?:[.!?。！？]+|\\n|$)/gu;
-  for (const match of text.matchAll(pattern)) {
-    bounds.push({start: match.index, end: match.index + match[0].length});
-  }
-  return bounds;
-}
-
-function trimBounds(text, start, end) {
-  while (start < end && /\\s/u.test(text[start])) start += 1;
-  while (end > start && /\\s/u.test(text[end - 1])) end -= 1;
-  return {start, end};
-}
-
-export function snapStartToWordBoundary(text, offset) {
-  const safeOffset = Math.max(0, Math.min(offset, text.length));
-  if (
-    safeOffset === 0
-    || safeOffset === text.length
-    || !/[\\p{Script=Latin}\\p{Number}_'’]/u.test(text[safeOffset - 1])
-    || !/[\\p{Script=Latin}\\p{Number}_'’]/u.test(text[safeOffset])
-  ) {
-    return safeOffset;
-  }
-  if ('Segmenter' in Intl) {
-    const locale = typeof document === 'undefined'
-      ? undefined
-      : document.documentElement.lang || undefined;
-    const segmenter = new Intl.Segmenter(locale, {granularity: 'word'});
-    for (const segment of segmenter.segment(text)) {
-      const end = segment.index + segment.segment.length;
-      if (segment.isWordLike && segment.index < safeOffset && safeOffset < end) {
-        return segment.index;
-      }
-      if (segment.index >= safeOffset) break;
-    }
-  }
-  let start = safeOffset;
-  while (
-    start > 0
-    && /[\\p{Script=Latin}\\p{Number}_'’]/u.test(text[start - 1])
-  ) {
-    start -= 1;
-  }
-  return start;
-}
-
-function safeSizedBounds(text, start, end) {
-  const chunks = [];
-  let cursor = start;
-  while (cursor < end) {
-    let chunkEnd = Math.min(cursor + MAX_TEXT_CHARACTERS, end);
-    if (chunkEnd < end) {
-      const candidate = text.slice(cursor, chunkEnd);
-      const breakAt = Math.max(candidate.lastIndexOf(' '), candidate.lastIndexOf('\\n'));
-      if (breakAt > MAX_TEXT_CHARACTERS / 2) chunkEnd = cursor + breakAt + 1;
-    }
-    const trimmed = trimBounds(text, cursor, chunkEnd);
-    if (trimmed.start < trimmed.end) chunks.push(trimmed);
-    cursor = chunkEnd;
-  }
-  return chunks;
-}
-
-function startPoint(segments, offset) {
-  for (const segment of segments) {
-    if (offset <= segment.end) {
-      return {
-        node: segment.node,
-        offset: Math.max(0, Math.min(offset - segment.start, segment.node.data.length)),
-      };
-    }
-  }
-  const last = segments.at(-1);
-  return last ? {node: last.node, offset: last.node.data.length} : null;
-}
-
-function endPoint(segments, offset) {
-  for (let index = segments.length - 1; index >= 0; index -= 1) {
-    const segment = segments[index];
-    if (offset >= segment.start) {
-      return {
-        node: segment.node,
-        offset: Math.max(0, Math.min(offset - segment.start, segment.node.data.length)),
-      };
-    }
-  }
-  const first = segments[0];
-  return first ? {node: first.node, offset: 0} : null;
-}
-
-function rangeFromBounds(segments, start, end) {
-  const from = startPoint(segments, start);
-  const to = endPoint(segments, end);
-  if (!from || !to) return null;
-  const range = document.createRange();
-  range.setStart(from.node, from.offset);
-  range.setEnd(to.node, to.offset);
-  return range.collapsed ? null : range;
-}
-
-export function readingQueueFromSelection(selectionRange) {
-  const startNode = selectionRange.startContainer;
-  const startElement = startNode.nodeType === Node.ELEMENT_NODE
-    ? startNode
-    : startNode.parentElement;
-  const article = startElement?.closest('.theme-doc-markdown');
-  if (!article) return [];
-  const {text, segments} = readingDocument(article);
-  if (!segments.length) return [];
-  const selectionOffset = snapStartToWordBoundary(
-    text,
-    selectionStartOffset(selectionRange, segments),
-  );
-  const queue = [];
-  for (const sentence of sentenceBounds(text)) {
-    if (sentence.end <= selectionOffset) continue;
-    const start = Math.max(sentence.start, selectionOffset);
-    for (const bounds of safeSizedBounds(text, start, sentence.end)) {
-      const range = rangeFromBounds(segments, bounds.start, bounds.end);
-      const spokenText = range?.toString().replace(/\\s+/gu, ' ').trim();
-      if (range && spokenText) queue.push({text: spokenText, range});
-    }
-  }
-  return queue;
-}
-
-export function highlightAndCenter(range) {
-  if (CSS.highlights && typeof Highlight !== 'undefined') {
-    CSS.highlights.set(HIGHLIGHT_NAME, new Highlight(range));
-  }
-  const rect = range.getBoundingClientRect();
-  if (rect.width || rect.height) {
-    window.scrollTo({
-      top: Math.max(0, window.scrollY + rect.top + rect.height / 2 - window.innerHeight / 2),
-      behavior: 'smooth',
-    });
-  }
-}
-
-export function isEditableTarget(target) {
-  return target instanceof Element && Boolean(
-    target.closest('input, textarea, select, button, [contenteditable="true"], [role="textbox"]'),
-  );
-}
-"""
-
-
-def _selection_tts_reader_js() -> str:
-    return """import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {useLocation} from '@docusaurus/router';
-import {
-  clearReadingHighlight,
-  highlightAndCenter,
-  isEditableTarget,
-  readingQueueFromSelection,
-  selectionDetails,
-} from './readingQueue';
-
-const SAMPLE_RATE = 24000;
-const INITIAL_BUFFER_SECONDS = 0.35;
-const MAX_BUFFER_AHEAD_SECONDS = 10;
-const BUFFER_CAPACITY_RESERVE_SECONDS = 1;
-const REBUFFER_SECONDS = 0.12;
-const SENTENCE_CROSSFADE_SECONDS = 0.008;
-const START_FADE_SECONDS = 0.006;
-
-function abortError() {
-  return new DOMException('朗读已停止', 'AbortError');
-}
-
-function abortableDelay(milliseconds, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(abortError());
-      return;
-    }
-    function onAbort() {
-      window.clearTimeout(timer);
-      reject(abortError());
-    }
-    const timer = window.setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, milliseconds);
-    signal.addEventListener('abort', onAbort, {once: true});
-  });
-}
-
-async function waitForBufferCapacity(audioContext, timeline, signal) {
-  while (
-    timeline.hasAudio
-    && timeline.nextStartTime - audioContext.currentTime
-      > MAX_BUFFER_AHEAD_SECONDS - BUFFER_CAPACITY_RESERVE_SECONDS
-  ) {
-    await abortableDelay(50, signal);
-  }
-}
-
-async function waitUntilAudioTime(audioContext, targetTime, signal) {
-  while (audioContext.currentTime + 0.015 < targetTime) {
-    const remainingMilliseconds = (targetTime - audioContext.currentTime) * 1000;
-    await abortableDelay(Math.min(50, Math.max(10, remainingMilliseconds)), signal);
-  }
-}
-
-export default function SelectionTtsReader() {
-  const location = useLocation();
-  const [selection, setSelection] = useState(null);
-  const [state, setState] = useState('idle');
-  const [message, setMessage] = useState('选择正文文字即可朗读');
-  const [speed, setSpeed] = useState(1);
-  const audioContextRef = useRef(null);
-  const audioSourcesRef = useRef(new Set());
-  const abortRef = useRef(null);
-  const pendingPlaybackRef = useRef(new Set());
-  const requestStartedAtRef = useRef(0);
-  const playbackIdRef = useRef(0);
-  const speedRef = useRef(1);
-  const continuousRef = useRef(false);
-  const progressRef = useRef('');
-  const pathnameRef = useRef(location.pathname);
-
-  const releaseAudio = useCallback(() => {
-    playbackIdRef.current += 1;
-    for (const resolve of pendingPlaybackRef.current) resolve();
-    pendingPlaybackRef.current.clear();
-    for (const source of audioSourcesRef.current) {
-      source.onended = null;
-      try {
-        source.stop();
-      } catch {
-        // A source that already ended cannot be stopped again.
-      }
-    }
-    audioSourcesRef.current.clear();
-    const context = audioContextRef.current;
-    audioContextRef.current = null;
-    if (context && context.state !== 'closed') void context.close();
-    clearReadingHighlight();
-  }, []);
-
-  const stop = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    continuousRef.current = false;
-    progressRef.current = '';
-    releaseAudio();
-    setState('stopped');
-    setMessage('已停止');
-  }, [releaseAudio]);
-
-  const enqueueStream = useCallback(async (
-    text,
-    audioContext,
-    controller,
-    playbackId,
-    timeline,
-    onStarted,
-  ) => {
-    const response = await fetch('/api/tts', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text}),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || `本地语音服务返回 ${response.status}`);
-    }
-    const payload = await response.json();
-    if (
-      typeof payload.streamUrl !== 'string'
-      || !payload.streamUrl.startsWith('/api/tts/stream/')
-    ) {
-      throw new Error('本地语音服务返回了无效的流地址。');
-    }
-    const streamResponse = await fetch(payload.streamUrl, {signal: controller.signal});
-    if (!streamResponse.ok || !streamResponse.body) {
-      throw new Error(`本地音频流返回 ${streamResponse.status}`);
-    }
-
-    const localSources = new Set();
-    let resolvePlayback;
-    let playbackResolved = false;
-    const playbackComplete = new Promise((resolve) => {
-      resolvePlayback = resolve;
-    });
-    function resolvePlaybackOnce() {
-      if (playbackResolved) return;
-      playbackResolved = true;
-      pendingPlaybackRef.current.delete(resolvePlaybackOnce);
-      resolvePlayback();
-    }
-    pendingPlaybackRef.current.add(resolvePlaybackOnce);
-    const reader = streamResponse.body.getReader();
-    let headerBytesRemaining = 44;
-    let leftover = new Uint8Array(0);
-    let receivedAudio = false;
-    let streamFinished = false;
-    let lastSentenceGain = null;
-    let lastSentenceEndTime = 0;
-
-    function finishIfReady() {
-      if (
-        streamFinished
-        && localSources.size === 0
-        && playbackIdRef.current === playbackId
-      ) {
-        resolvePlaybackOnce();
-      }
-    }
-
-    function schedulePcm(pcmBytes) {
-      const combined = new Uint8Array(leftover.length + pcmBytes.length);
-      combined.set(leftover);
-      combined.set(pcmBytes, leftover.length);
-      const usableLength = combined.length - (combined.length % 2);
-      leftover = combined.slice(usableLength);
-      if (!usableLength) return;
-
-      const samples = new Float32Array(usableLength / 2);
-      const view = new DataView(combined.buffer, combined.byteOffset, usableLength);
-      for (let index = 0; index < samples.length; index += 1) {
-        samples[index] = view.getInt16(index * 2, true) / 32768;
-      }
-      const buffer = audioContext.createBuffer(1, samples.length, SAMPLE_RATE);
-      buffer.copyToChannel(samples, 0);
-      const source = audioContext.createBufferSource();
-      const gainNode = audioContext.createGain();
-      const playbackRate = speedRef.current;
-      source.buffer = buffer;
-      source.playbackRate.value = playbackRate;
-      source.connect(gainNode);
-      gainNode.connect(audioContext.destination);
-
-      const isFirstSentenceBlock = !receivedAudio;
-      let startAt;
-      if (!timeline.hasAudio) {
-        startAt = audioContext.currentTime + INITIAL_BUFFER_SECONDS;
-        gainNode.gain.setValueAtTime(0, startAt);
-        gainNode.gain.linearRampToValueAtTime(
-          1,
-          startAt + Math.min(START_FADE_SECONDS, buffer.duration / playbackRate / 2),
-        );
-      } else if (
-        isFirstSentenceBlock
-        && timeline.nextStartTime
-          > audioContext.currentTime + SENTENCE_CROSSFADE_SECONDS
-      ) {
-        startAt = timeline.nextStartTime - SENTENCE_CROSSFADE_SECONDS;
-        gainNode.gain.setValueAtTime(0, startAt);
-        gainNode.gain.linearRampToValueAtTime(1, timeline.nextStartTime);
-      } else if (timeline.nextStartTime < audioContext.currentTime) {
-        startAt = audioContext.currentTime + REBUFFER_SECONDS;
-        gainNode.gain.setValueAtTime(0, startAt);
-        gainNode.gain.linearRampToValueAtTime(
-          1,
-          startAt + Math.min(START_FADE_SECONDS, buffer.duration / playbackRate / 2),
-        );
-      } else {
-        startAt = timeline.nextStartTime;
-      }
-
-      const endAt = startAt + buffer.duration / playbackRate;
-      timeline.hasAudio = true;
-      timeline.nextStartTime = endAt;
-      lastSentenceGain = gainNode;
-      lastSentenceEndTime = endAt;
-      localSources.add(source);
-      audioSourcesRef.current.add(source);
-      source.onended = () => {
-        localSources.delete(source);
-        audioSourcesRef.current.delete(source);
-        source.disconnect();
-        gainNode.disconnect();
-        finishIfReady();
-      };
-      source.start(startAt);
-      if (isFirstSentenceBlock) {
-        receivedAudio = true;
-        void waitUntilAudioTime(audioContext, startAt, controller.signal)
-          .then(() => {
-            if (playbackIdRef.current === playbackId) onStarted();
-          })
-          .catch((error) => {
-            if (error.name !== 'AbortError') console.error(error);
-          });
-      }
-    }
-
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      let audioBytes = value;
-      if (headerBytesRemaining) {
-        const skipped = Math.min(headerBytesRemaining, audioBytes.length);
-        headerBytesRemaining -= skipped;
-        audioBytes = audioBytes.slice(skipped);
-      }
-      if (audioBytes.length) schedulePcm(audioBytes);
-    }
-    if (!receivedAudio) throw new Error('本地语音服务没有返回音频。');
-    if (lastSentenceGain && lastSentenceEndTime > audioContext.currentTime) {
-      const fadeDuration = Math.min(
-        SENTENCE_CROSSFADE_SECONDS,
-        Math.max(0, lastSentenceEndTime - audioContext.currentTime),
-      );
-      const fadeStart = lastSentenceEndTime - fadeDuration;
-      lastSentenceGain.gain.setValueAtTime(1, fadeStart);
-      lastSentenceGain.gain.linearRampToValueAtTime(0, lastSentenceEndTime);
-    }
-    streamFinished = true;
-    finishIfReady();
-    if (controller.signal.aborted || playbackIdRef.current !== playbackId) {
-      throw abortError();
-    }
-    return {playbackComplete};
-  }, []);
-
-  const startReading = useCallback(async (items, continuous) => {
-    if (!items.length) {
-      setSelection(null);
-      setState('error');
-      setMessage('无法从此处识别可朗读的正文。');
-      return;
-    }
-    abortRef.current?.abort();
-    releaseAudio();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    continuousRef.current = continuous;
-    requestStartedAtRef.current = Date.now();
-    const playbackId = playbackIdRef.current;
-    setSelection(null);
-    window.getSelection()?.removeAllRanges();
-    setState('loading');
-    try {
-      const audioContext = new AudioContext();
-      audioContextRef.current = audioContext;
-      await audioContext.resume();
-      const timeline = {hasAudio: false, nextStartTime: 0};
-      const playbackPromises = [];
-      for (let index = 0; index < items.length; index += 1) {
-        if (controller.signal.aborted) throw abortError();
-        await waitForBufferCapacity(audioContext, timeline, controller.signal);
-        const item = items[index];
-        const progress = continuous ? `第 ${index + 1}/${items.length} 句` : '';
-        const {playbackComplete} = await enqueueStream(
-          item.text,
-          audioContext,
-          controller,
-          playbackId,
-          timeline,
-          () => {
-            if (continuous && item.range) highlightAndCenter(item.range);
-            progressRef.current = progress;
-            const startupSeconds = (Date.now() - requestStartedAtRef.current) / 1000;
-            if (audioContext.state === 'suspended') {
-              setState('paused');
-              setMessage(`已暂停${progress ? ` · ${progress}` : ''}`);
-            } else {
-              setState('playing');
-              setMessage(
-                continuous
-                  ? `正在连续朗读 · ${progress}`
-                  : `正在流式朗读 · ${startupSeconds.toFixed(1)} 秒启动`,
-              );
-            }
-          },
-        );
-        playbackPromises.push(playbackComplete);
-      }
-      await Promise.all(playbackPromises);
-      if (controller.signal.aborted || playbackIdRef.current !== playbackId) throw abortError();
-      continuousRef.current = false;
-      progressRef.current = '';
-      setState('stopped');
-      setMessage(continuous ? '连续朗读完成' : '朗读完成');
-      releaseAudio();
-    } catch (error) {
-      if (error.name === 'AbortError') return;
-      continuousRef.current = false;
-      progressRef.current = '';
-      setState('error');
-      setMessage(error.message || '本地语音生成失败。');
-      releaseAudio();
-    } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-    }
-  }, [enqueueStream, releaseAudio]);
-
-  const speakSelection = useCallback((details) => {
-    void startReading([{text: details.text, range: null}], false);
-  }, [startReading]);
-
-  const speakContinuously = useCallback((details) => {
-    void startReading(readingQueueFromSelection(details.range), true);
-  }, [startReading]);
-
-  const togglePause = useCallback(() => {
-    const audioContext = audioContextRef.current;
-    if (!audioContext) return;
-    if (audioContext.state === 'running') {
-      audioContext.suspend().then(() => {
-        setState('paused');
-        setMessage(
-          continuousRef.current
-            ? `已暂停 · ${progressRef.current} · 空格键继续`
-            : '已暂停',
-        );
-      });
-    } else {
-      audioContext.resume().then(() => {
-        setState('playing');
-        setMessage(
-          continuousRef.current
-            ? `正在连续朗读 · ${progressRef.current}`
-            : '正在朗读',
-        );
-      }).catch(() => {
-        setState('error');
-        setMessage('浏览器无法继续播放语音。');
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    function updateSelection() {
-      if (['loading', 'playing', 'paused'].includes(state)) {
-        setSelection(null);
-        return;
-      }
-      window.requestAnimationFrame(() => setSelection(selectionDetails()));
-    }
-    function keyboardShortcut(event) {
-      if (event.altKey && event.key.toLocaleLowerCase() === 'r') {
-        const details = selectionDetails();
-        if (details) {
-          event.preventDefault();
-          speakSelection(details);
-        }
-      }
-      if (
-        event.code === 'Space'
-        && !event.repeat
-        && continuousRef.current
-        && ['loading', 'playing', 'paused'].includes(state)
-        && !isEditableTarget(event.target)
-      ) {
-        event.preventDefault();
-        togglePause();
-      }
-      if (event.key === 'Escape' && ['loading', 'playing', 'paused'].includes(state)) stop();
-    }
-    document.addEventListener('mouseup', updateSelection);
-    document.addEventListener('keyup', updateSelection);
-    document.addEventListener('keydown', keyboardShortcut);
-    window.addEventListener('scroll', updateSelection, true);
-    window.addEventListener('resize', updateSelection);
-    return () => {
-      document.removeEventListener('mouseup', updateSelection);
-      document.removeEventListener('keyup', updateSelection);
-      document.removeEventListener('keydown', keyboardShortcut);
-      window.removeEventListener('scroll', updateSelection, true);
-      window.removeEventListener('resize', updateSelection);
-    };
-  }, [speakSelection, state, stop, togglePause]);
-
-  useEffect(() => {
-    if (pathnameRef.current !== location.pathname) stop();
-    pathnameRef.current = location.pathname;
-  }, [location.pathname, stop]);
-
-  useEffect(() => () => {
-    abortRef.current?.abort();
-    continuousRef.current = false;
-    progressRef.current = '';
-    releaseAudio();
-  }, [releaseAudio]);
-
-  useEffect(() => {
-    speedRef.current = speed;
-  }, [speed]);
-
-  return (
-    <>
-      {selection ? (
-        <div
-          className="booksite-tts-selection"
-          role="toolbar"
-          aria-label="Qwen3-TTS 朗读选项"
-          style={{top: selection.top, left: selection.left}}
-          onMouseDown={(event) => event.preventDefault()}
-          onMouseUp={(event) => event.stopPropagation()}
-        >
-          <button
-            type="button"
-            onClick={() => speakSelection(selection)}
-            aria-label="使用 Qwen3-TTS 朗读选中文字"
-          >
-            <span aria-hidden="true">▶</span> Qwen3 朗读选中
-          </button>
-          <button
-            type="button"
-            onClick={() => speakContinuously(selection)}
-            aria-label="从选择位置开始连续朗读"
-          >
-            从此处连续朗读
-          </button>
-        </div>
-      ) : null}
-      {state !== 'idle' ? (
-        <section className={`booksite-tts-player is-${state}`} aria-label="本地语音朗读器">
-          <div>
-            <strong>Qwen3-TTS</strong>
-            <span role="status" aria-live="polite">{message}</span>
-            {continuousRef.current ? <small>空格键：暂停/继续</small> : null}
-          </div>
-          <label>
-            <span className="sr-only">朗读速度</span>
-            <select
-              value={speed}
-              onChange={(event) => setSpeed(Number(event.target.value))}
-              aria-label="朗读速度"
-            >
-              <option value="0.75">0.75×</option>
-              <option value="1">1×</option>
-              <option value="1.25">1.25×</option>
-              <option value="1.5">1.5×</option>
-            </select>
-          </label>
-          {state === 'loading' || state === 'playing' || state === 'paused' ? (
-            <button type="button" onClick={togglePause}>
-              {state === 'paused' ? '继续' : '暂停'}
-            </button>
-          ) : null}
-          {state === 'loading' || state === 'playing' || state === 'paused' ? (
-            <button type="button" onClick={stop}>停止</button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setState('idle')}
-              aria-label="关闭朗读器"
-            >
-              关闭
-            </button>
-          )}
-        </section>
-      ) : null}
-    </>
-  );
-}
-"""
-
-
-def _root_js() -> str:
-    return """import React from 'react';
-import SelectionTtsReader from '@site/src/components/SelectionTtsReader';
-
-export default function Root({children}) {
-  return (
-    <>
-      {children}
-      <SelectionTtsReader />
-    </>
-  );
-}
 """
 
 
@@ -1541,91 +817,6 @@ img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
 .booksite-metrics strong { display: block; font-size: 1.5rem; }
 .booksite-metrics span { color: var(--booksite-muted); }
 
-.booksite-tts-selection {
-  position: fixed;
-  z-index: 1000;
-  display: flex;
-  overflow: hidden;
-  border: 1px solid #0e4ed8;
-  border-radius: 999px;
-  box-shadow: 0 8px 24px rgb(18 24 38 / 22%);
-  background: #1463ff;
-  font-family: var(--ifm-font-family-base);
-}
-.booksite-tts-selection button {
-  padding: 0.5rem 0.72rem;
-  border: 0;
-  background: transparent;
-  color: #fff;
-  font: inherit;
-  font-size: 0.76rem;
-  font-weight: 680;
-  line-height: 1;
-  cursor: pointer;
-}
-.booksite-tts-selection button + button { border-left: 1px solid rgb(255 255 255 / 35%); }
-.booksite-tts-selection button:hover { background: #0052ef; }
-.booksite-tts-selection button:focus-visible {
-  outline: 3px solid rgb(20 99 255 / 30%);
-  outline-offset: -3px;
-}
-::highlight(booksite-tts-current) {
-  background: rgb(255 203 71 / 70%);
-  color: inherit;
-  text-decoration: underline #1463ff 2px;
-  text-underline-offset: 0.16em;
-}
-.booksite-tts-player {
-  position: fixed;
-  z-index: 999;
-  right: 22px;
-  bottom: 22px;
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  max-width: min(620px, calc(100vw - 32px));
-  padding: 0.75rem 0.85rem;
-  border: 1px solid var(--booksite-border);
-  border-left: 4px solid #1463ff;
-  border-radius: 8px;
-  box-shadow: 0 12px 36px rgb(18 24 38 / 18%);
-  background: var(--ifm-background-color);
-  color: var(--ifm-font-color-base);
-  font-family: var(--ifm-font-family-base);
-}
-.booksite-tts-player > div {
-  display: grid;
-  min-width: 11rem;
-  line-height: 1.25;
-}
-.booksite-tts-player > div span {
-  margin-top: 0.16rem;
-  color: var(--booksite-muted);
-  font-size: 0.76rem;
-}
-.booksite-tts-player > div small {
-  margin-top: 0.2rem;
-  color: var(--booksite-muted);
-  font-size: 0.68rem;
-}
-.booksite-tts-player select,
-.booksite-tts-player button {
-  min-height: 2rem;
-  padding: 0.32rem 0.55rem;
-  border: 1px solid var(--booksite-border);
-  border-radius: 5px;
-  background: var(--ifm-background-color);
-  color: var(--ifm-font-color-base);
-  font-family: var(--ifm-font-family-base);
-  font-size: 0.78rem;
-  font-weight: 650;
-  line-height: 1;
-}
-.booksite-tts-player button { cursor: pointer; }
-.booksite-tts-player button:hover { border-color: #1463ff; color: #1463ff; }
-.booksite-tts-player.is-loading { border-left-color: #d48a00; }
-.booksite-tts-player.is-error { border-left-color: #c83232; }
-
 @media (max-width: 996px) {
   .theme-doc-markdown {
     padding-left: 0;
@@ -1636,14 +827,6 @@ img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
   .booksite-search-link { min-width: auto; border: 0; }
   .booksite-book-title { max-width: none; border-left: 0; }
   .booksite-pdf-code button { opacity: 1; }
-  .booksite-tts-player {
-    right: 16px;
-    bottom: 16px;
-    left: 16px;
-    flex-wrap: wrap;
-    max-width: none;
-  }
-  .booksite-tts-player > div { flex: 1 1 100%; }
 }
 """
 
@@ -1662,6 +845,12 @@ def generate_docusaurus_site(book: BookIR, site_dir: str | Path) -> SiteGenerati
     pages_dir.mkdir(parents=True, exist_ok=True)
     theme_dir.mkdir(parents=True, exist_ok=True)
     static_dir.mkdir(parents=True, exist_ok=True)
+    for obsolete_tts_file in (
+        components_dir / "readingQueue.js",
+        components_dir / "SelectionTtsReader.js",
+        theme_dir / "Root.js",
+    ):
+        obsolete_tts_file.unlink(missing_ok=True)
 
     for old_doc in docs_dir.glob("*.md"):
         old_doc.unlink()
@@ -1714,20 +903,8 @@ def generate_docusaurus_site(book: BookIR, site_dir: str | Path) -> SiteGenerati
         _pdf_url_callout_js(),
         encoding="utf-8",
     )
-    (components_dir / "readingQueue.js").write_text(
-        _reading_queue_js(),
-        encoding="utf-8",
-    )
-    (components_dir / "SelectionTtsReader.js").write_text(
-        _selection_tts_reader_js(),
-        encoding="utf-8",
-    )
     (theme_dir / "MDXComponents.js").write_text(
         _mdx_components_js(),
-        encoding="utf-8",
-    )
-    (theme_dir / "Root.js").write_text(
-        _root_js(),
         encoding="utf-8",
     )
     (static_dir / "search-index.json").write_text(

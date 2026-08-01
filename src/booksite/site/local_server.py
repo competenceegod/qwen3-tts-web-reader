@@ -236,6 +236,8 @@ class TtsEngine:
         self.reference_audio = discover_reference_audio()
         self._model: object | None = None
         self._lock = threading.Lock()
+        self._warming = False
+        self._state_lock = threading.Lock()
 
     @property
     def runtime_available(self) -> bool:
@@ -248,11 +250,14 @@ class TtsEngine:
     def status(self) -> dict[str, object]:
         runtime = self.runtime_available
         model = self.model_path is not None
+        with self._state_lock:
+            warming = self._warming
         return {
             "available": runtime and model,
             "model": self.model_path.name if self.model_path else None,
             "runtime": runtime,
             "referenceVoice": self.reference_audio is not None,
+            "warming": warming,
         }
 
     def require_available(self) -> None:
@@ -309,7 +314,11 @@ class TtsEngine:
     def warm_up(self) -> bool:
         if (self.model_path is None and self._model is None) or not self.runtime_available:
             return False
+        with self._state_lock:
+            self._warming = True
         if not self._lock.acquire(blocking=False):
+            with self._state_lock:
+                self._warming = False
             return False
         try:
             model = self._load_model()
@@ -324,6 +333,20 @@ class TtsEngine:
             return False
         finally:
             self._lock.release()
+            with self._state_lock:
+                self._warming = False
+
+
+def start_background_warm_up(engine: TtsEngine) -> threading.Thread:
+    """Warm the model without delaying the loopback HTTP listener."""
+
+    thread = threading.Thread(
+        target=engine.warm_up,
+        name="booksite-tts-warm-up",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 class BooksiteServer(ThreadingHTTPServer):
@@ -468,10 +491,6 @@ def main() -> None:
         )
 
     engine = TtsEngine()
-    if engine.status()["available"]:
-        target = "语音服务" if args.tts_only else "本地网站"
-        print(f"正在预热 Qwen3-TTS，{target}稍后启动…", flush=True)
-        engine.warm_up()
     handler = make_handler(build_dir, engine)
     try:
         server = BooksiteServer((args.host, args.port), handler)
@@ -483,6 +502,9 @@ def main() -> None:
     url = f"http://{args.host}:{server.server_port}/"
     label = "本地语音服务" if args.tts_only else "本地网站"
     print(f"{label}：{url}", flush=True)
+    if engine.status()["available"]:
+        print("Qwen3-TTS 正在后台预热；接口已经可连接。", flush=True)
+        start_background_warm_up(engine)
     print("保持此窗口开启；按 Control-C 停止。", flush=True)
     if not args.no_open and not args.tts_only:
         opener = threading.Timer(0.2, webbrowser.open, args=(url,))

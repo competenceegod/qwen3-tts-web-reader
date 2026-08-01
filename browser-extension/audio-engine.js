@@ -6,7 +6,9 @@ const BUFFER_CAPACITY_RESERVE_SECONDS = 1;
 const REBUFFER_SECONDS = 0.12;
 const SENTENCE_CROSSFADE_SECONDS = 0.008;
 const START_FADE_SECONDS = 0.006;
-const BUSY_RETRY_DELAYS_MS = Object.freeze([150, 300, 600, 1000, 1500, 2000]);
+const BUSY_RETRY_DELAYS_MS = Object.freeze([
+  150, 300, 600, 1000, 1500, 2000, 3000, 4000, 5000, 6000,
+]);
 const ALLOWED_SPEEDS = new Set([0.75, 1, 1.25, 1.5]);
 
 function abortError() {
@@ -75,6 +77,16 @@ async function requestStreamUrl(
   return payload.streamUrl;
 }
 
+function isNetworkFailure(error) {
+  return error instanceof TypeError;
+}
+
+function serviceUnavailableError() {
+  return new Error(
+    '无法连接本地语音服务。请双击“启动Qwen朗读服务.command”，等待服务启动后重试。',
+  );
+}
+
 export async function requestAudioStream(
   text,
   {
@@ -86,26 +98,34 @@ export async function requestAudioStream(
   const requestSignal = signal ?? new AbortController().signal;
   let attempt = 0;
   while (true) {
-    const streamUrl = await requestStreamUrl(
-      text,
-      {request, signal: requestSignal},
-    );
-    const response = await request(
-      `${SERVICE_ORIGIN}${streamUrl}`,
-      {signal: requestSignal},
-    );
-    if (response.status === 409 && attempt < retryDelays.length) {
-      await response.arrayBuffer().catch(() => {});
+    try {
+      const streamUrl = await requestStreamUrl(
+        text,
+        {request, signal: requestSignal},
+      );
+      const response = await request(
+        `${SERVICE_ORIGIN}${streamUrl}`,
+        {signal: requestSignal},
+      );
+      if (response.status === 409 && attempt < retryDelays.length) {
+        await response.arrayBuffer().catch(() => {});
+        await abortableDelay(retryDelays[attempt], requestSignal);
+        attempt += 1;
+        continue;
+      }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `本地音频流返回 ${response.status}`);
+      }
+      if (!response.body) throw new Error('本地音频流没有返回内容。');
+      return response;
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      if (!isNetworkFailure(error)) throw error;
+      if (attempt >= retryDelays.length) throw serviceUnavailableError();
       await abortableDelay(retryDelays[attempt], requestSignal);
       attempt += 1;
-      continue;
     }
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || `本地音频流返回 ${response.status}`);
-    }
-    if (!response.body) throw new Error('本地音频流没有返回内容。');
-    return response;
   }
 }
 
@@ -274,16 +294,30 @@ export class StreamingTtsPlayer {
       }
     };
 
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      let audioBytes = value;
-      if (headerBytesRemaining) {
-        const skipped = Math.min(headerBytesRemaining, audioBytes.length);
-        headerBytesRemaining -= skipped;
-        audioBytes = audioBytes.slice(skipped);
+    let streamCompleted = false;
+    try {
+      while (true) {
+        await waitForBufferCapacity(audioContext, timeline, controller.signal);
+        const {done, value} = await reader.read();
+        if (done) {
+          streamCompleted = true;
+          break;
+        }
+        let audioBytes = value;
+        if (headerBytesRemaining) {
+          const skipped = Math.min(headerBytesRemaining, audioBytes.length);
+          headerBytesRemaining -= skipped;
+          audioBytes = audioBytes.slice(skipped);
+        }
+        if (audioBytes.length) schedulePcm(audioBytes);
       }
-      if (audioBytes.length) schedulePcm(audioBytes);
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      if (isNetworkFailure(error)) throw serviceUnavailableError();
+      throw error;
+    } finally {
+      if (!streamCompleted) await reader.cancel().catch(() => {});
+      reader.releaseLock();
     }
     if (!receivedAudio) throw new Error('本地语音服务没有返回音频。');
     if (lastSentenceGain && lastSentenceEndTime > audioContext.currentTime) {

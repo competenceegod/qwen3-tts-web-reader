@@ -17,6 +17,13 @@ Assumptions approved by the user's request and existing workflow:
 - Continuous reading keeps the existing Space pause/resume behavior.
 - The local service is started separately and remains bound to loopback only.
 
+This reliability revision makes the extension the single owner of speech for
+both ordinary pages and generated PDF book sites. Generated sites must not
+embed a second reader, TTS API, model runtime, or speech-specific launcher.
+The extension must recover from a temporarily unavailable local service, keep
+continuous playback resource usage bounded, and resume after a pause longer
+than Chrome's 30-second offscreen-audio lifetime.
+
 ## Tech stack
 
 - Chrome Extension Manifest V3
@@ -57,7 +64,7 @@ browser-extension/
   启动Qwen朗读服务.command        Standalone loopback service launcher
   安装说明.md                    Installation and known limitations
 src/booksite/site/local_server.py
-                                Shared site/extension TTS server
+                                Extension-only loopback TTS server
 tests/integration/test_browser_extension.py
                                 Manifest, security, queue, and launcher tests
 ```
@@ -113,6 +120,12 @@ queues are ignored or rejected.
   extension on at least two structurally different pages. Console errors,
   selection controls, sentence progress, Space pause/resume, and stop cleanup
   are checked.
+- Reliability tests inject a refused network request followed by recovery,
+  hold Web Audio's clock still to prove stream backpressure, and verify that an
+  unexpected local-service exit is restarted by the launcher.
+- A browser acceptance run pauses continuous reading for more than 30 seconds,
+  then resumes from the current sentence and continues without a raw Fetch
+  exception.
 
 ## Boundaries
 
@@ -124,6 +137,12 @@ queues are ignored or rejected.
 - Render controls inside a Shadow DOM and construct UI with DOM APIs.
 - Abort network streams and disconnect audio nodes on stop or navigation.
 - Bound each sentence, queue length, and total queued characters.
+- Open the loopback HTTP port before model warm-up and expose warm-up state so
+  the browser never mistakes model initialization for a missing service.
+- Retry transient network failures and model-busy responses with bounded
+  backoff; convert exhausted Fetch failures into actionable Chinese guidance.
+- Apply response-stream backpressure whenever scheduled audio reaches the
+  buffer-ahead limit, including while playback is paused.
 
 ### Ask first
 
@@ -140,6 +159,8 @@ queues are ignored or rejected.
 - Execute page-provided strings as code or HTML.
 - Run on `chrome://`, extension-store, or other restricted pages.
 - Bind the TTS service to a non-loopback interface.
+- Add a second TTS reader, MLX dependency, or speech API to generated PDF
+  sites; those sites are ordinary pages consumed by this extension.
 
 ## Success criteria
 
@@ -156,8 +177,20 @@ queues are ignored or rejected.
   offscreen audio document. Resuming recreates the document when necessary and
   restarts at the current sentence before continuing through the remaining
   in-memory queue; selected page text is not persisted to disk.
-- Audio uses the shared gapless timeline, startup buffer, bounded sentence
-  prefetch, sentence crossfade, and cleanup behavior of the book reader.
+- Pausing for at least 30 seconds and then pressing Space returns to `playing`
+  without losing the remaining queue. If the audio document or local stream
+  was discarded, the current sentence is regenerated automatically.
+- Audio uses a gapless timeline, startup buffer, bounded sentence prefetch,
+  sentence crossfade, and deterministic cleanup inside the extension.
+- The local status endpoint becomes reachable before model warm-up completes;
+  a native-runtime crash is restarted by the launcher, while a normal
+  Control-C exit is not restarted.
+- Newly generated PDF sites contain no `SelectionTtsReader`, `/api/tts`
+  frontend request, or MLX-aware site launcher. Existing generated sites are
+  migrated to the same extension-only ownership model.
+- A transient connection refusal or HTTP 409 is retried without displaying
+  `Failed to fetch`. After the bounded retry budget is exhausted, the UI shows
+  how to start the local Qwen service.
 - The extension can fetch only `http://127.0.0.1:8765/*` and
   `http://localhost:8765/*`.
 - The standalone service works without `build/index.html` and still rejects

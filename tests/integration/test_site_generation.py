@@ -1,11 +1,10 @@
-import base64
 import json
 import stat
 import subprocess
 import sys
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import urlopen
 
 from booksite.models.book_ir import BookIR, SectionIR
 from booksite.site.docusaurus import generate_docusaurus_site
@@ -32,7 +31,16 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
         ],
     )
 
-    result = generate_docusaurus_site(book, tmp_path / "site")
+    site_target = tmp_path / "site"
+    for stale_path in (
+        site_target / "src/components/readingQueue.js",
+        site_target / "src/components/SelectionTtsReader.js",
+        site_target / "src/theme/Root.js",
+    ):
+        stale_path.parent.mkdir(parents=True, exist_ok=True)
+        stale_path.write_text("stale embedded TTS", encoding="utf-8")
+
+    result = generate_docusaurus_site(book, site_target)
 
     index_doc = result.docs_dir / "01-chapter-1-aaaaaaaa.md"
     assert index_doc.exists()
@@ -46,10 +54,10 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert (result.site_dir / "src/pages/quality-report.js").exists()
     assert (result.site_dir / "src/components/PdfCodeBlock.js").exists()
     assert (result.site_dir / "src/components/PdfUrlCallout.js").exists()
-    assert (result.site_dir / "src/components/readingQueue.js").exists()
-    assert (result.site_dir / "src/components/SelectionTtsReader.js").exists()
+    assert not (result.site_dir / "src/components/readingQueue.js").exists()
+    assert not (result.site_dir / "src/components/SelectionTtsReader.js").exists()
     assert (result.site_dir / "src/theme/MDXComponents.js").exists()
-    assert (result.site_dir / "src/theme/Root.js").exists()
+    assert not (result.site_dir / "src/theme/Root.js").exists()
     assert (result.site_dir / "static/favicon.svg").exists()
     config = (result.site_dir / "docusaurus.config.mjs").read_text(encoding="utf-8")
     assert "favicon: 'favicon.svg'" in config
@@ -113,79 +121,14 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     assert preview_launcher.stat().st_mode & stat.S_IXUSR
     launcher_text = preview_launcher.read_text(encoding="utf-8")
     assert "serve-local.py" in launcher_text
-    assert "mlx-audio==0.4.5" in launcher_text
-    assert "uv run --no-project" in launcher_text
+    assert "mlx-audio" not in launcher_text
+    assert "uv run" not in launcher_text
     guide_text = preview_guide.read_text(encoding="utf-8")
     assert "不要直接双击 build/index.html" in guide_text
-    assert "Qwen3-TTS" in guide_text
-    assert "从选择位置连续朗读" in guide_text
-    assert "空格键暂停或继续" in guide_text
-    selection_reader = (result.site_dir / "src/components/SelectionTtsReader.js").read_text(
-        encoding="utf-8"
-    )
-    reading_queue = (result.site_dir / "src/components/readingQueue.js").read_text(
-        encoding="utf-8"
-    )
-    assert "Qwen3 朗读" in selection_reader
-    assert "/api/tts" in selection_reader
-    assert "aria-live" in selection_reader
-    assert "playbackRate" in selection_reader
-    assert "new AudioContext()" in selection_reader
-    assert "streamResponse.body.getReader()" in selection_reader
-    assert "createBufferSource()" in selection_reader
-    assert "new Audio(" not in selection_reader
-    assert "response.blob()" not in selection_reader
-    assert "秒启动" in selection_reader
-    assert "onMouseUp={(event) => event.stopPropagation()}" in selection_reader
-    assert "从此处连续朗读" in selection_reader
-    assert "new Intl.Segmenter" in reading_queue
-    assert "snapStartToWordBoundary" in reading_queue
-    assert "CSS.highlights.set" in reading_queue
-    assert "scrollTo({" in reading_queue
-    assert "const INITIAL_BUFFER_SECONDS = 0.35" in selection_reader
-    assert "const MAX_BUFFER_AHEAD_SECONDS = 10" in selection_reader
-    assert "waitForBufferCapacity" in selection_reader
-    assert "pendingPlaybackRef = useRef(new Set())" in selection_reader
-    assert "linearRampToValueAtTime" in selection_reader
-    assert "gainNode.disconnect()" in selection_reader
-    assert "return {playbackComplete}" in selection_reader
-    assert "const {playbackComplete} = await enqueueStream" in selection_reader
-    assert "playbackPromises.push" in selection_reader
-    assert "event.code === 'Space'" in selection_reader
-    assert "isEditableTarget(event.target)" in selection_reader
-    assert "空格键：暂停/继续" in selection_reader
-    assert "::highlight(booksite-tts-current)" in css
-    root_component = (result.site_dir / "src/theme/Root.js").read_text(encoding="utf-8")
-    assert "SelectionTtsReader" in root_component
-    assert "children" in root_component
+    assert "浏览器朗读扩展" in guide_text
     preview_server_text = preview_server.read_text(encoding="utf-8")
-    assert "/api/tts" in preview_server_text
-    assert "/api/tts/stream/" in preview_server_text
-    assert "streaming_interval" in preview_server_text
-    assert "BOOKSITE_TTS_MODEL" in preview_server_text
-
-    reading_queue_module = base64.b64encode(reading_queue.encode("utf-8")).decode("ascii")
-    word_boundary_check = subprocess.run(
-        [
-            "node",
-            "--input-type=module",
-            "--eval",
-            (
-                f"const module = await import('data:text/javascript;base64,"
-                f"{reading_queue_module}');"
-                "if (module.snapStartToWordBoundary('These applications work.', 10) !== 6) "
-                "throw new Error('mid-word selection was not moved to the word start');"
-                "if (module.snapStartToWordBoundary('These applications work.', 5) !== 5) "
-                "throw new Error('existing word boundary moved unexpectedly');"
-                "if (module.snapStartToWordBoundary('中文朗读。', 2) !== 2) "
-                "throw new Error('CJK selection moved unexpectedly');"
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert word_boundary_check.returncode == 0, word_boundary_check.stderr
+    assert "/api/tts" not in preview_server_text
+    assert "mlx_audio" not in preview_server_text
 
     build_dir = result.site_dir / "build"
     build_dir.mkdir()
@@ -215,22 +158,12 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
         with urlopen(preview_url, timeout=3) as response:
             assert response.status == 200
             assert b"Local preview works" in response.read()
-        with urlopen(f"{preview_url}api/tts/status", timeout=3) as response:
-            status = json.load(response)
-            assert set(status) >= {"available", "model", "runtime"}
-        invalid_request = Request(
-            f"{preview_url}api/tts",
-            data=b"not-json",
-            headers={"Content-Type": "text/plain"},
-            method="POST",
-        )
         try:
-            urlopen(invalid_request, timeout=3)
+            urlopen(f"{preview_url}api/tts/status", timeout=3)
         except HTTPError as error:
-            assert error.code == 415
-            assert json.load(error)["error"]
+            assert error.code == 404
         else:
-            raise AssertionError("non-JSON TTS request unexpectedly succeeded")
+            raise AssertionError("generated site unexpectedly exposed a TTS API")
     finally:
         process.terminate()
         process.wait(timeout=3)

@@ -20,6 +20,7 @@ from booksite.site.local_server import (
     is_loopback_client,
     make_handler,
     parse_tts_request,
+    start_background_warm_up,
     wav_stream_header,
 )
 
@@ -203,6 +204,46 @@ def test_tts_engine_warms_model_with_a_short_stream() -> None:
 
     assert model.calls[0]["text"] == "Ready."
     assert model.calls[0]["stream"] is True
+
+
+def test_background_warm_up_keeps_status_endpoint_reachable() -> None:
+    warm_up_started = threading.Event()
+    release_warm_up = threading.Event()
+
+    class BlockingWarmUpEngine:
+        sample_rate = 24_000
+
+        def status(self) -> dict[str, object]:
+            return {
+                "available": True,
+                "model": "fake",
+                "runtime": True,
+                "warming": not release_warm_up.is_set(),
+            }
+
+        def warm_up(self) -> bool:
+            warm_up_started.set()
+            release_warm_up.wait(timeout=3)
+            return True
+
+    engine = BlockingWarmUpEngine()
+    server = BooksiteServer(("127.0.0.1", 0), make_handler(None, engine))
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    warm_thread = start_background_warm_up(engine)
+    try:
+        assert warm_up_started.wait(timeout=1)
+        with urlopen(
+            f"http://127.0.0.1:{server.server_port}/api/tts/status",
+            timeout=1,
+        ) as response:
+            assert json.load(response)["warming"] is True
+    finally:
+        release_warm_up.set()
+        warm_thread.join(timeout=1)
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=1)
 
 
 def test_tts_session_is_one_time_and_expires() -> None:
