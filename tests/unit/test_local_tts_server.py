@@ -1,4 +1,5 @@
 import json
+import os
 import struct
 import sys
 import threading
@@ -54,8 +55,8 @@ def test_discover_model_snapshot_uses_the_independent_huggingface_cache(
 ) -> None:
     older = _model_snapshot(tmp_path, "older")
     newer = _model_snapshot(tmp_path, "newer")
-    older.touch()
-    newer.touch()
+    os.utime(older, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(newer, ns=(2_000_000_000, 2_000_000_000))
 
     assert discover_model_snapshot(home=tmp_path, environ={}) == newer
 
@@ -232,6 +233,19 @@ def test_mlx_engine_downloads_its_own_custom_voice_model() -> None:
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "::ffff:127.0.0.1"])
 def test_loopback_clients_are_allowed(host: str) -> None:
     assert is_loopback_client(host)
+
+
+def test_ipv4_mapped_loopback_uses_the_mapped_address_on_older_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mapped_address = SimpleNamespace(is_loopback=True)
+    parsed_address = SimpleNamespace(is_loopback=False, ipv4_mapped=mapped_address)
+    monkeypatch.setattr(
+        "booksite.site.local_server.ipaddress.ip_address",
+        lambda _host: parsed_address,
+    )
+
+    assert is_loopback_client("::ffff:127.0.0.1")
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.8", "10.0.0.4", "example.com"])

@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -118,7 +119,8 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     preview_guide = result.site_dir / "本地打开说明.txt"
     assert preview_server.exists()
     assert preview_launcher.exists()
-    assert preview_launcher.stat().st_mode & stat.S_IXUSR
+    if os.name != "nt":
+        assert preview_launcher.stat().st_mode & stat.S_IXUSR
     launcher_text = preview_launcher.read_text(encoding="utf-8")
     assert "serve-local.py" in launcher_text
     assert "mlx-audio" not in launcher_text

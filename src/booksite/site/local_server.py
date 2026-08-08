@@ -84,7 +84,11 @@ def discover_model_snapshot(
 
 def is_loopback_client(host: str) -> bool:
     try:
-        return ipaddress.ip_address(host).is_loopback
+        address = ipaddress.ip_address(host)
+        mapped_address = getattr(address, "ipv4_mapped", None)
+        return address.is_loopback or (
+            mapped_address is not None and mapped_address.is_loopback
+        )
     except ValueError:
         return False
 
