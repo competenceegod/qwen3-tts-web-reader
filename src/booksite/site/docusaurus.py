@@ -308,11 +308,11 @@ def main() -> None:
         if not ipaddress.ip_address(args.host).is_loopback:
             raise ValueError
     except ValueError as error:
-        raise SystemExit("--host 必须是本机回环地址。") from error
+        raise SystemExit("--host must be a loopback address.") from error
 
     build_dir = Path(__file__).resolve().parent / "build"
     if not (build_dir / "index.html").is_file():
-        raise SystemExit("未找到 build/index.html。请先执行 pnpm build。")
+        raise SystemExit("build/index.html was not found. Run pnpm build first.")
 
     handler = lambda *handler_args, **kwargs: SimpleHTTPRequestHandler(
         *handler_args,
@@ -323,12 +323,13 @@ def main() -> None:
         server = ThreadingHTTPServer((args.host, args.port), handler)
     except OSError as error:
         raise SystemExit(
-            f"无法启动本地网站：{error}。可尝试 python3 serve-local.py --port 8001"
+            f"Could not start the local site: {error}. "
+            "Try python3 serve-local.py --port 8001."
         ) from error
 
     url = f"http://{args.host}:{server.server_port}/"
-    print(f"本地网站：{url}", flush=True)
-    print("保持此窗口开启；按 Control-C 停止。", flush=True)
+    print(f"Local site: {url}", flush=True)
+    print("Keep this window open; press Control-C to stop.", flush=True)
     if not args.no_open:
         opener = threading.Timer(0.2, webbrowser.open, args=(url,))
         opener.daemon = True
@@ -336,7 +337,7 @@ def main() -> None:
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\\n本地网站已停止。")
+        print("\\nLocal site stopped.")
     finally:
         server.server_close()
 

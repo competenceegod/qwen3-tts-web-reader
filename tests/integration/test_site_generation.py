@@ -155,8 +155,8 @@ def test_generate_docusaurus_site_writes_docs_navigation_and_report_link(tmp_pat
     try:
         assert process.stdout is not None
         output_line = process.stdout.readline().strip()
-        assert output_line.startswith("本地网站：http://127.0.0.1:")
-        preview_url = output_line.removeprefix("本地网站：")
+        assert output_line.startswith("Local site: http://127.0.0.1:")
+        preview_url = output_line.removeprefix("Local site: ")
         with urlopen(preview_url, timeout=3) as response:
             assert response.status == 200
             assert b"Local preview works" in response.read()
