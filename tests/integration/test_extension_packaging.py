@@ -107,6 +107,15 @@ def test_platform_launchers_select_the_expected_backend(tmp_path: Path) -> None:
         assert runtime in script
 
 
+def test_windows_powershell_launcher_is_ascii_for_windows_powershell_5() -> None:
+    launcher = (
+        PROJECT_ROOT
+        / "browser-extension/platform/windows/start-qwen-reader.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert launcher.isascii()
+
+
 def test_platform_archives_include_detailed_english_install_guides(
     tmp_path: Path,
 ) -> None:
