@@ -162,3 +162,22 @@ def test_source_extension_has_english_cross_platform_installation_guide() -> Non
     ):
         assert marker in guide
     assert not re.search(r"[\u3400-\u9fff]", guide)
+
+
+def test_public_documentation_uses_the_current_repository_owner() -> None:
+    documentation = [
+        *PROJECT_ROOT.glob("*.md"),
+        *(PROJECT_ROOT / "browser-extension").rglob("*.md"),
+        *(PROJECT_ROOT / "docs").rglob("*.md"),
+    ]
+
+    for path in documentation:
+        assert "janycechoice" not in path.read_text(encoding="utf-8"), path
+
+    repository_url = "https://github.com/competenceegod/qwen3-tts-web-reader"
+    root_guide = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    extension_guide = (PROJECT_ROOT / "browser-extension/README.md").read_text(
+        encoding="utf-8"
+    )
+    assert f"git clone {repository_url}.git" in root_guide
+    assert f"{repository_url}/releases" in extension_guide

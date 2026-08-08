@@ -6,7 +6,7 @@ the current user's cache.
 
 ## Download a release
 
-Open the [Releases page](https://github.com/janycechoice/qwen3-tts-web-reader/releases)
+Open the [Releases page](https://github.com/competenceegod/qwen3-tts-web-reader/releases)
 and download exactly one archive:
 
 - `qwen3-tts-web-reader-0.2.0-macos.zip`
@@ -131,4 +131,3 @@ sentence before playback continues.
 
 The service intentionally accepts requests only from the local machine. Do not
 change it to listen on a public or LAN-facing address.
-

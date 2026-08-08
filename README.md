@@ -24,7 +24,7 @@ page text or generated audio.
 ## Download and installation
 
 Download the ZIP for your operating system from the
-[latest GitHub release](https://github.com/janycechoice/qwen3-tts-web-reader/releases/latest),
+[latest GitHub release](https://github.com/competenceegod/qwen3-tts-web-reader/releases/latest),
 extract it, and follow the `README.md` included in that archive.
 
 | Operating system | Runtime | Accelerator | Detailed guide |
@@ -79,7 +79,7 @@ Requirements: Git, Python 3.11 or later, `uv`, and Node.js for JavaScript syntax
 checks.
 
 ```bash
-git clone https://github.com/janycechoice/qwen3-tts-web-reader.git
+git clone https://github.com/competenceegod/qwen3-tts-web-reader.git
 cd qwen3-tts-web-reader
 uv sync --extra dev
 uv run pytest
