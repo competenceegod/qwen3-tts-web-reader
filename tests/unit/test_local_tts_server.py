@@ -1,9 +1,11 @@
 import json
 import struct
+import sys
 import threading
 import wave
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.request import Request, urlopen
 
 import pytest
@@ -137,6 +139,60 @@ def test_torch_engine_uses_official_custom_voice_contract() -> None:
             "max_new_tokens": generation_token_limit("Read this sentence."),
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("cuda_available", "bf16_available", "expected_device", "expected_dtype"),
+    [
+        (False, False, "cpu", "float32"),
+        (True, False, "cuda:0", "float16"),
+        (True, True, "cuda:0", "bfloat16"),
+    ],
+)
+def test_torch_engine_auto_selects_safe_device_and_precision(
+    monkeypatch: pytest.MonkeyPatch,
+    cuda_available: bool,
+    bf16_available: bool,
+    expected_device: str,
+    expected_dtype: str,
+) -> None:
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: cuda_available,
+            is_bf16_supported=lambda: bf16_available,
+        ),
+        float32="float32",
+        float16="float16",
+        bfloat16="bfloat16",
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    engine = TorchTtsEngine(environ={})
+
+    options = engine._runtime_options()
+
+    assert options == {
+        "device_map": expected_device,
+        "dtype": expected_dtype,
+        "attn_implementation": "sdpa",
+    }
+
+
+def test_torch_engine_rejects_requested_cuda_when_it_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False, is_bf16_supported=lambda: False),
+        float32="float32",
+        float16="float16",
+        bfloat16="bfloat16",
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    engine = TorchTtsEngine(environ={"BOOKSITE_TTS_DEVICE": "cuda"})
+
+    with pytest.raises(RequestError, match="无法访问 NVIDIA GPU") as error:
+        engine._runtime_options()
+
+    assert error.value.status == 503
 
 
 class _FakeMlxCustomVoiceModel:
