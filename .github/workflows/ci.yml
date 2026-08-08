@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Install project
+        run: uv sync --frozen --extra dev
+      - name: Run tests
+        run: uv run --frozen pytest
+      - name: Run Ruff
+        run: uv run --frozen ruff check .
+      - name: Check extension JavaScript
+        run: uv run --frozen python scripts/check_javascript.py
+      - name: Check platform launchers
+        run: uv run --frozen python scripts/check_launchers.py
+      - name: Build platform archives
+        run: uv run --frozen python scripts/package_extension.py

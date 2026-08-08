@@ -6,6 +6,8 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+import pytest
+
 from booksite.site.local_server import (
     BooksiteServer,
     audio_to_pcm16_bytes,
@@ -494,6 +496,7 @@ globalThis.fetch = async (url) => {{
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX launcher is covered on macOS and Linux")
 def test_service_launcher_restarts_once_after_an_unexpected_exit(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

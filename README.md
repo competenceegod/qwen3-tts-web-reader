@@ -102,18 +102,18 @@ pnpm --dir site/<book-id> serve
 - 连续朗读支持空格键暂停/继续，以及停止和 0.75–1.5× 调速
 - 深色模式和移动端侧栏
 
-朗读功能会自动发现并复用 PDFgear 已下载的
-`mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit`，不会复制或再次下载约
-1.9 GB 的模型。首次使用可能由 `uv` 安装约 100 MB 的 MLX 运行库。选中文字、
-参考音色和生成音频都只在本机处理；服务仅允许绑定和访问回环地址。没有模型、
-MLX 运行库或 `uv` 时，网站仍可正常阅读，并会显示可操作的朗读错误提示。启动
+朗读功能使用本项目独立下载的 Qwen3-TTS 模型，不要求安装 PDFgear。macOS
+使用 Apple Silicon 优化的 MLX Audio，Windows/Linux 使用 Qwen 官方
+`qwen-tts` PyTorch 包。选中文字和生成音频都只在本机处理；服务仅允许绑定和访问
+回环地址。没有模型、运行库或 `uv` 时，网站仍可正常阅读，并会显示可操作的
+朗读错误提示。启动
 脚本会先预热模型；朗读时通过 Web Audio 播放正在生成的音频块，不必等待整段
 语音生成完成。选择文字后点击“从此处连续朗读”，会从选择位置按句读到当前
 文档末尾，并自动高亮、居中当前句；连续模式下按空格键即可暂停或继续。
 
 ## 在任意网页中使用 Qwen3-TTS
 
-项目根目录的 `browser-extension/` 是一个无需打包的 Chrome/Chromium 扩展，
+项目根目录的 `browser-extension/` 是 Chrome/Chromium 扩展源码，
 可把同一套本地朗读能力用于普通 HTTP 和 HTTPS 网页：
 
 1. 双击 `browser-extension/启动Qwen朗读服务.command`，保持终端窗口开启。
@@ -126,6 +126,17 @@ MLX 运行库或 `uv` 时，网站仍可正常阅读，并会显示可操作的�
 `127.0.0.1:8765` / `localhost:8765` 本地语音接口的网络权限，不会上传网页
 内容。Chrome 内部页面、扩展商店、跨域 iframe 等受保护区域不受支持。完整安装
 说明见 [browser-extension/安装说明.md](browser-extension/安装说明.md)。
+
+发布版可以生成三套自包含安装包（不内置模型）：
+
+```bash
+uv run python scripts/package_extension.py
+```
+
+输出位于 `dist/`，包括 macOS、Windows、Linux ZIP 和 `SHA256SUMS.txt`。macOS
+首次启动独立下载 MLX 版 Qwen3-TTS；Windows/Linux 下载 Qwen 官方模型并优先
+使用 CUDA，CPU 仅作为较慢的兼容回退。Git tag `v0.2.0` 会在三系统 CI 通过后
+自动创建 GitHub Release。
 
 ## 分阶段运行
 
