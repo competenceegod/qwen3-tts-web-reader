@@ -12,9 +12,9 @@ fi
 RESTART_DELAY=${BOOKSITE_TTS_RESTART_DELAY:-2}
 
 while true; do
-  if uv run --no-project --python 3.12 --with 'mlx-audio==0.4.5' \
+  if uv run --no-project --python 3.12 --with 'mlx-audio==0.4.6' \
     python "$PROJECT_DIR/src/booksite/site/local_server.py" \
-    --tts-only --host 127.0.0.1 --port 8765 --no-open; then
+    --tts-only --tts-backend mlx --host 127.0.0.1 --port 8765 --no-open; then
     exit 0
   else
     status=$?

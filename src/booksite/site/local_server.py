@@ -24,7 +24,10 @@ from pathlib import Path
 
 MAX_REQUEST_BYTES = 16_384
 MAX_TEXT_CHARACTERS = 2_000
-MODEL_CACHE_NAME = "models--mlx-community--Qwen3-TTS-12Hz-0.6B-Base-8bit"
+DEFAULT_MLX_MODEL = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+DEFAULT_TORCH_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+DEFAULT_SPEAKER = "Ryan"
+MODEL_CACHE_NAME = "models--mlx-community--Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
 REQUIRED_MODEL_FILES = (
     "config.json",
     "model.safetensors",
@@ -62,19 +65,13 @@ def discover_model_snapshot(
     """Find an existing compatible model without downloading another copy."""
 
     environment = os.environ if environ is None else environ
-    explicit = environment.get("BOOKSITE_TTS_MODEL")
+    explicit = environment.get("BOOKSITE_TTS_MLX_MODEL")
     if explicit:
         candidate = Path(explicit).expanduser().resolve()
         return candidate if _is_complete_model(candidate) else None
 
     user_home = Path.home() if home is None else home
-    snapshots_dir = (
-        user_home
-        / "Library/Containers/com.pdfeditor.pdfeditormac/Data/Library/Application Support"
-        / "huggingface/hub"
-        / MODEL_CACHE_NAME
-        / "snapshots"
-    )
+    snapshots_dir = user_home / ".cache/huggingface/hub" / MODEL_CACHE_NAME / "snapshots"
     if not snapshots_dir.is_dir():
         return None
     candidates = [
@@ -83,20 +80,6 @@ def discover_model_snapshot(
     if not candidates:
         return None
     return max(candidates, key=lambda candidate: (candidate.stat().st_mtime_ns, candidate.name))
-
-
-def discover_reference_audio() -> Path | None:
-    """Return PDFgear's local reference voice sample when it is installed."""
-
-    configured = os.environ.get("BOOKSITE_TTS_REFERENCE_AUDIO")
-    candidates = [
-        Path(configured).expanduser() if configured else None,
-        Path("/Applications/PDFgear.app/Contents/Resources/refAudio.wav"),
-    ]
-    return next(
-        (candidate.resolve() for candidate in candidates if candidate and candidate.is_file()),
-        None,
-    )
 
 
 def is_loopback_client(host: str) -> bool:
@@ -262,12 +245,16 @@ class TtsSessionStore:
         return session[1]
 
 
-class TtsEngine:
-    """Lazy, serialized wrapper around MLX-Audio."""
+class MlxTtsEngine:
+    """Lazy, serialized Qwen3-TTS wrapper optimized for Apple Silicon."""
 
-    def __init__(self) -> None:
-        self.model_path = discover_model_snapshot()
-        self.reference_audio = discover_reference_audio()
+    def __init__(self, *, environ: Mapping[str, str] | None = None) -> None:
+        environment = os.environ if environ is None else environ
+        configured_model = environment.get("BOOKSITE_TTS_MLX_MODEL")
+        cached_model = discover_model_snapshot(environ=environment)
+        self.model_id = configured_model or str(cached_model or DEFAULT_MLX_MODEL)
+        self.model_path = cached_model
+        self.speaker = environment.get("BOOKSITE_TTS_SPEAKER", DEFAULT_SPEAKER)
         self._model: object | None = None
         self._lock = threading.Lock()
         self._warming = False
@@ -283,30 +270,28 @@ class TtsEngine:
 
     def status(self) -> dict[str, object]:
         runtime = self.runtime_available
-        model = self.model_path is not None
         with self._state_lock:
             warming = self._warming
         return {
-            "available": runtime and model,
-            "model": self.model_path.name if self.model_path else None,
+            "available": runtime,
+            "backend": "mlx",
+            "model": self.model_id,
             "runtime": runtime,
-            "referenceVoice": self.reference_audio is not None,
+            "speaker": self.speaker,
+            "downloadRequired": self.model_path is None,
             "warming": warming,
         }
 
     def require_available(self) -> None:
-        if self.model_path is None and self._model is None:
-            raise RequestError(503, "未找到 PDFgear 下载的兼容 Qwen3-TTS 模型。")
         if not self.runtime_available:
-            raise RequestError(503, "未安装 MLX 语音运行库，请使用“打开网站.command”启动。")
+            raise RequestError(503, "未安装 MLX 语音运行库，请使用平台启动器启动。")
 
     def _load_model(self) -> object:
         if self._model is None:
             self.require_available()
             from mlx_audio.tts.utils import load_model
 
-            assert self.model_path is not None
-            self._model = load_model(str(self.model_path))
+            self._model = load_model(self.model_id)
         return self._model
 
     def _generation_options(self, text: str, *, max_tokens: int | None = None) -> dict[str, object]:
@@ -317,9 +302,16 @@ class TtsEngine:
             "stream": True,
             "streaming_interval": STREAMING_INTERVAL_SECONDS,
         }
-        if self.reference_audio:
-            options["ref_audio"] = str(self.reference_audio)
         return options
+
+    def _generate(self, model: object, text: str, *, max_tokens: int | None = None) -> object:
+        options = self._generation_options(text, max_tokens=max_tokens)
+        custom_voice = getattr(model, "generate_custom_voice", None)
+        if custom_voice is not None:
+            options.update({"speaker": self.speaker, "language": "Auto"})
+            options.pop("lang_code", None)
+            return custom_voice(text=text, **options)
+        return model.generate(text, **options)
 
     def stream_pcm(self, text: str) -> Iterator[bytes]:
         if not self._lock.acquire(blocking=False):
@@ -330,7 +322,7 @@ class TtsEngine:
                 emitted = False
                 quiet_chunks: list[bytes] = []
                 quiet_seconds = 0.0
-                generation = model.generate(candidate, **self._generation_options(candidate))
+                generation = self._generate(model, candidate)
                 try:
                     for result in generation:
                         samples = list(_flatten_audio(result.audio))
@@ -368,7 +360,7 @@ class TtsEngine:
         return output.getvalue()
 
     def warm_up(self) -> bool:
-        if (self.model_path is None and self._model is None) or not self.runtime_available:
+        if not self.runtime_available:
             return False
         with self._state_lock:
             self._warming = True
@@ -378,10 +370,7 @@ class TtsEngine:
             return False
         try:
             model = self._load_model()
-            for _ in model.generate(
-                "Ready.",
-                **self._generation_options("Ready.", max_tokens=64),
-            ):
+            for _ in self._generate(model, "Ready.", max_tokens=64):
                 pass
             return True
         except Exception as error:
@@ -393,7 +382,157 @@ class TtsEngine:
                 self._warming = False
 
 
-def start_background_warm_up(engine: TtsEngine) -> threading.Thread:
+TtsEngine = MlxTtsEngine
+
+
+class TorchTtsEngine:
+    """Cross-platform wrapper around Qwen's official PyTorch package."""
+
+    def __init__(self, *, environ: Mapping[str, str] | None = None) -> None:
+        environment = os.environ if environ is None else environ
+        self.model_id = environment.get("BOOKSITE_TTS_TORCH_MODEL", DEFAULT_TORCH_MODEL)
+        self.speaker = environment.get("BOOKSITE_TTS_SPEAKER", DEFAULT_SPEAKER)
+        self.requested_device = environment.get("BOOKSITE_TTS_DEVICE", "auto")
+        self._model: object | None = None
+        self._sample_rate = 24_000
+        self._lock = threading.Lock()
+        self._warming = False
+        self._state_lock = threading.Lock()
+        self._device = "unresolved"
+
+    @property
+    def runtime_available(self) -> bool:
+        return self._model is not None or (
+            importlib.util.find_spec("qwen_tts") is not None
+            and importlib.util.find_spec("torch") is not None
+        )
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
+
+    def status(self) -> dict[str, object]:
+        with self._state_lock:
+            warming = self._warming
+        return {
+            "available": self.runtime_available,
+            "backend": "torch",
+            "model": self.model_id,
+            "runtime": self.runtime_available,
+            "speaker": self.speaker,
+            "device": self._device,
+            "warming": warming,
+        }
+
+    def require_available(self) -> None:
+        if not self.runtime_available:
+            raise RequestError(503, "未安装官方 qwen-tts 运行库，请使用平台启动器启动。")
+
+    def _runtime_options(self) -> dict[str, object]:
+        import torch
+
+        requested = self.requested_device.casefold()
+        if requested == "auto":
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        elif requested == "cuda":
+            device = "cuda:0"
+        elif requested == "cpu" or requested.startswith("cuda:"):
+            device = requested
+        else:
+            raise RequestError(503, "BOOKSITE_TTS_DEVICE 仅支持 auto、cpu、cuda 或 cuda:N。")
+        if device.startswith("cuda") and not torch.cuda.is_available():
+            raise RequestError(503, "已要求使用 CUDA，但当前 PyTorch 无法访问 NVIDIA GPU。")
+        dtype = torch.float32
+        if device.startswith("cuda"):
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        self._device = device
+        return {"device_map": device, "dtype": dtype, "attn_implementation": "sdpa"}
+
+    def _load_model(self) -> object:
+        if self._model is None:
+            self.require_available()
+            from qwen_tts import Qwen3TTSModel
+
+            self._model = Qwen3TTSModel.from_pretrained(
+                self.model_id,
+                **self._runtime_options(),
+            )
+        return self._model
+
+    def _generate(self, model: object, text: str) -> tuple[list[object], int]:
+        return model.generate_custom_voice(
+            text=text,
+            language="Auto",
+            speaker=self.speaker,
+            non_streaming_mode=True,
+            max_new_tokens=generation_token_limit(text),
+        )
+
+    def stream_pcm(self, text: str) -> Iterator[bytes]:
+        if not self._lock.acquire(blocking=False):
+            raise RequestError(409, "正在生成上一段语音，请稍后再试。")
+        try:
+            model = self._load_model()
+            for candidate in _spoken_text_candidates(text):
+                wavs, sample_rate = self._generate(model, candidate)
+                if not wavs:
+                    continue
+                samples = list(_flatten_audio(wavs[0]))
+                if _audio_rms(samples) < LOW_ENERGY_RMS_THRESHOLD:
+                    continue
+                self._sample_rate = int(sample_rate)
+                yield audio_to_pcm16_bytes(samples)
+                return
+            raise RuntimeError("语音模型没有返回有效语音。")
+        finally:
+            self._lock.release()
+
+    def synthesize(self, text: str) -> bytes:
+        pcm = b"".join(self.stream_pcm(text))
+        output = BytesIO()
+        with wave.open(output, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(self.sample_rate)
+            wav_file.writeframes(pcm)
+        return output.getvalue()
+
+    def warm_up(self) -> bool:
+        if not self.runtime_available:
+            return False
+        with self._state_lock:
+            self._warming = True
+        try:
+            for _ in self.stream_pcm("Ready."):
+                pass
+            return True
+        except Exception as error:
+            print(f"Qwen3-TTS warm-up error: {error}", file=sys.stderr, flush=True)
+            return False
+        finally:
+            with self._state_lock:
+                self._warming = False
+
+
+def create_tts_engine(
+    *,
+    backend: str = "auto",
+    platform_name: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> MlxTtsEngine | TorchTtsEngine:
+    environment = os.environ if environ is None else environ
+    selected = environment.get("BOOKSITE_TTS_BACKEND", backend).casefold()
+    current_platform = sys.platform if platform_name is None else platform_name
+    if selected == "auto":
+        selected = "mlx" if current_platform == "darwin" else "torch"
+    if selected == "mlx":
+        return MlxTtsEngine(environ=environment)
+    if selected == "torch":
+        return TorchTtsEngine(environ=environment)
+    raise ValueError("tts backend must be auto, mlx, or torch")
+
+
+def start_background_warm_up(engine: MlxTtsEngine | TorchTtsEngine) -> threading.Thread:
     """Warm the model without delaying the loopback HTTP listener."""
 
     thread = threading.Thread(
@@ -411,7 +550,7 @@ class BooksiteServer(ThreadingHTTPServer):
 
 def make_handler(
     build_dir: Path | None,
-    engine: TtsEngine,
+    engine: MlxTtsEngine | TorchTtsEngine,
     sessions: TtsSessionStore | None = None,
 ) -> type[SimpleHTTPRequestHandler]:
     session_store = sessions or TtsSessionStore()
@@ -533,6 +672,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Serve only the loopback TTS API without requiring a Docusaurus build.",
     )
+    parser.add_argument(
+        "--tts-backend",
+        choices=("auto", "mlx", "torch"),
+        default="auto",
+        help="Select the local Qwen runtime. Auto uses MLX on macOS and PyTorch elsewhere.",
+    )
     return parser.parse_args(argv)
 
 
@@ -546,7 +691,7 @@ def main() -> None:
             "未找到 build/index.html。请先运行 PDF 转换，或在本书目录执行 pnpm build。"
         )
 
-    engine = TtsEngine()
+    engine = create_tts_engine(backend=args.tts_backend)
     handler = make_handler(build_dir, engine)
     try:
         server = BooksiteServer((args.host, args.port), handler)

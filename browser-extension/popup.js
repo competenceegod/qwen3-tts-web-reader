@@ -17,7 +17,7 @@
       status.classList.add('ready');
       status.textContent = '本地 Qwen3-TTS 服务已就绪';
     } catch {
-      status.textContent = '服务未启动，请双击“启动Qwen朗读服务.command”';
+      status.textContent = '服务未启动，请运行当前系统的 Qwen 启动器';
     }
   }
 

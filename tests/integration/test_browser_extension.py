@@ -35,7 +35,7 @@ def test_extension_manifest_uses_minimal_loopback_permissions() -> None:
     manifest = json.loads((EXTENSION_DIR / "manifest.json").read_text(encoding="utf-8"))
 
     assert manifest["manifest_version"] == 3
-    assert manifest["version"] == "0.1.2"
+    assert manifest["version"] == "0.2.0"
     assert manifest["permissions"] == ["offscreen"]
     assert manifest["host_permissions"] == [
         "http://127.0.0.1:8765/*",

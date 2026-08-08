@@ -10,11 +10,14 @@ import pytest
 
 from booksite.site.local_server import (
     BooksiteServer,
+    MlxTtsEngine,
     RequestError,
+    TorchTtsEngine,
     TtsEngine,
     TtsSessionStore,
     audio_to_pcm16_bytes,
     audio_to_wav_bytes,
+    create_tts_engine,
     discover_model_snapshot,
     generation_token_limit,
     is_loopback_client,
@@ -28,9 +31,8 @@ from booksite.site.local_server import (
 def _model_snapshot(root: Path, name: str = "snapshot-a") -> Path:
     snapshot = (
         root
-        / "Library/Containers/com.pdfeditor.pdfeditormac/Data/Library/Application Support"
-        / "huggingface/hub"
-        / "models--mlx-community--Qwen3-TTS-12Hz-0.6B-Base-8bit"
+        / ".cache/huggingface/hub"
+        / "models--mlx-community--Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
         / "snapshots"
         / name
     )
@@ -45,7 +47,9 @@ def _model_snapshot(root: Path, name: str = "snapshot-a") -> Path:
     return snapshot
 
 
-def test_discover_model_snapshot_reuses_pdfgear_cache(tmp_path: Path) -> None:
+def test_discover_model_snapshot_uses_the_independent_huggingface_cache(
+    tmp_path: Path,
+) -> None:
     older = _model_snapshot(tmp_path, "older")
     newer = _model_snapshot(tmp_path, "newer")
     older.touch()
@@ -60,7 +64,7 @@ def test_discover_model_snapshot_prefers_explicit_environment_path(tmp_path: Pat
 
     result = discover_model_snapshot(
         home=tmp_path,
-        environ={"BOOKSITE_TTS_MODEL": str(explicit)},
+        environ={"BOOKSITE_TTS_MLX_MODEL": str(explicit)},
     )
 
     assert result == explicit
@@ -72,6 +76,67 @@ def test_discover_model_snapshot_ignores_incomplete_model(tmp_path: Path) -> Non
     (snapshot / "speech_tokenizer/model.safetensors").unlink()
 
     assert discover_model_snapshot(home=tmp_path, environ={}) is None
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "expected_type"),
+    [("darwin", MlxTtsEngine), ("win32", TorchTtsEngine), ("linux", TorchTtsEngine)],
+)
+def test_auto_backend_selects_the_platform_runtime(
+    platform_name: str,
+    expected_type: type[object],
+) -> None:
+    engine = create_tts_engine(
+        backend="auto",
+        platform_name=platform_name,
+        environ={},
+    )
+
+    assert isinstance(engine, expected_type)
+
+
+def test_backend_environment_override_wins_over_auto_selection() -> None:
+    engine = create_tts_engine(
+        backend="auto",
+        platform_name="darwin",
+        environ={"BOOKSITE_TTS_BACKEND": "torch"},
+    )
+
+    assert isinstance(engine, TorchTtsEngine)
+
+
+class _FakeTorchModel:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def generate_custom_voice(self, **options: object):
+        self.calls.append(options)
+        return [[-0.5, 0.0, 0.5]], 24_000
+
+
+def test_torch_engine_uses_official_custom_voice_contract() -> None:
+    engine = TorchTtsEngine(
+        environ={
+            "BOOKSITE_TTS_TORCH_MODEL": "Qwen/test-model",
+            "BOOKSITE_TTS_SPEAKER": "Ryan",
+        }
+    )
+    model = _FakeTorchModel()
+    engine._model = model
+
+    chunks = list(engine.stream_pcm("Read this sentence."))
+
+    assert chunks == [audio_to_pcm16_bytes([-0.5, 0.0, 0.5])]
+    assert engine.sample_rate == 24_000
+    assert model.calls == [
+        {
+            "text": "Read this sentence.",
+            "language": "Auto",
+            "speaker": "Ryan",
+            "non_streaming_mode": True,
+            "max_new_tokens": generation_token_limit("Read this sentence."),
+        }
+    ]
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "::ffff:127.0.0.1"])
