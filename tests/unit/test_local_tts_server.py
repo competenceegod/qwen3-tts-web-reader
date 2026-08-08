@@ -139,6 +139,40 @@ def test_torch_engine_uses_official_custom_voice_contract() -> None:
     ]
 
 
+class _FakeMlxCustomVoiceModel:
+    sample_rate = 24_000
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def generate_custom_voice(self, **options: object):
+        self.calls.append(options)
+        yield _AudioResult([0.25, -0.25])
+
+
+def test_mlx_engine_downloads_its_own_custom_voice_model() -> None:
+    engine = MlxTtsEngine(environ={})
+    model = _FakeMlxCustomVoiceModel()
+    engine._model = model
+
+    chunks = list(engine.stream_pcm("Read independently."))
+
+    assert "PDFgear" not in engine.model_id
+    assert engine.model_id == "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+    assert chunks == [audio_to_pcm16_bytes([0.25, -0.25])]
+    assert model.calls == [
+        {
+            "text": "Read independently.",
+            "speaker": "Ryan",
+            "language": "Auto",
+            "max_tokens": generation_token_limit("Read independently."),
+            "verbose": False,
+            "stream": True,
+            "streaming_interval": 0.5,
+        }
+    ]
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "::ffff:127.0.0.1"])
 def test_loopback_clients_are_allowed(host: str) -> None:
     assert is_loopback_client(host)
