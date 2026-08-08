@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import zipfile
@@ -9,6 +10,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PACKAGER = PROJECT_ROOT / "scripts/package_extension.py"
 VERSION = "0.2.0"
 PLATFORMS = ("macos", "windows", "linux")
+PLATFORM_GUIDE_MARKERS = {
+    "macos": ("Apple Silicon", "start-qwen-reader.command", "MLX Audio"),
+    "windows": ("Windows 10 or 11", "start-qwen-reader.cmd", "NVIDIA CUDA"),
+    "linux": ("x86_64 Linux", "start-qwen-reader.sh", "SoX"),
+}
 
 
 def _package(output_dir: Path) -> subprocess.CompletedProcess[str]:
@@ -99,3 +105,51 @@ def test_platform_launchers_select_the_expected_backend(tmp_path: Path) -> None:
         assert "--port 8765" in script
         assert backend in script
         assert runtime in script
+
+
+def test_platform_archives_include_detailed_english_install_guides(
+    tmp_path: Path,
+) -> None:
+    result = _package(tmp_path)
+    assert result.returncode == 0, result.stderr
+
+    for platform, platform_markers in PLATFORM_GUIDE_MARKERS.items():
+        archive = tmp_path / f"qwen3-tts-web-reader-{VERSION}-{platform}.zip"
+        root = f"qwen3-tts-web-reader-{VERSION}-{platform}"
+        with zipfile.ZipFile(archive) as package:
+            guide = package.read(f"{root}/README.md").decode("utf-8")
+
+        required_markers = (
+            "# Qwen3-TTS Web Reader",
+            "## Requirements",
+            "## Install",
+            "chrome://extensions",
+            "127.0.0.1:8765",
+            "## Use the reader",
+            "Space",
+            "Esc",
+            "## Troubleshooting",
+            *platform_markers,
+        )
+        assert all(marker in guide for marker in required_markers)
+        assert not re.search(r"[\u3400-\u9fff]", guide)
+
+
+def test_source_extension_has_english_cross_platform_installation_guide() -> None:
+    guide = (PROJECT_ROOT / "browser-extension" / "README.md").read_text(
+        encoding="utf-8"
+    )
+
+    for marker in (
+        "# Qwen3-TTS Web Reader",
+        "## Download a release",
+        "## macOS installation",
+        "## Windows installation",
+        "## Linux installation",
+        "chrome://extensions",
+        "127.0.0.1:8765",
+        "Space",
+        "Esc",
+    ):
+        assert marker in guide
+    assert not re.search(r"[\u3400-\u9fff]", guide)

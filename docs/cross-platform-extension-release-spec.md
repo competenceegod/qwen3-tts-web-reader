@@ -11,7 +11,7 @@
 - 版本提升到 `0.2.0`。
 - 生成 `qwen3-tts-web-reader-0.2.0-{macos,windows,linux}.zip`。
 - 每个压缩包都包含可直接“加载已解压”的 `extension/`、本地服务源码、平台启动器、
-  中文安装说明和许可证。
+  详细的英文安装说明和许可证。
 - macOS 使用 MLX Audio 的低延迟路径，并由本项目独立下载
   `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16`；不要求安装 PDFgear，
   也不读取 PDFgear 的应用容器、模型或参考音频。
@@ -61,7 +61,7 @@ qwen3-tts-web-reader-0.2.0-<platform>/
 ## CI and release
 
 - GitHub Actions 在 `ubuntu-latest`、`macos-latest`、`windows-latest` 上运行测试。
-- 三个平台都验证 Python 测试、JavaScript 语法和打包内容；Linux 额外运行 Ruff。
+- 三个平台都验证 Python 测试、Ruff、JavaScript 语法、启动器和打包内容。
 - CI 不下载数 GB 模型，也不声称执行了 Windows/Linux 的真实模型推理。
 - tag `v0.2.0` 触发发布工作流，重新执行质量门禁、构建三份确定性 ZIP、生成 SHA-256
   校验文件，并通过 GitHub CLI 上传 Release。
@@ -85,6 +85,8 @@ qwen3-tts-web-reader-0.2.0-<platform>/
 6. 真实 Chrome 中能在普通网页选择文字、显示朗读控制、与本地服务连接且无控制台错误。
 7. 发布包经过路径、秘密、绝对路径、远程代码和 SHA-256 审计。
 8. GitHub Release 包含三份 ZIP、校验文件、平台要求和已知性能差异。
+9. 根 README、扩展 README 和每个平台包都提供英文安装文档；平台包测试拒绝缺少
+   必备步骤或包含中文正文的安装说明。
 
 ## Out of scope
 
